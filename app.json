@@ -2,24 +2,51 @@
   "expo": {
     "name": "photocell",
     "slug": "photocell",
-    "version": "1.0.0",
+    "version": "1.0.5",
     "orientation": "portrait",
-    "icon": "./assets/icon.png",
+    "icon": "./assets/photocell512px.png",
     "userInterfaceStyle": "light",
+    "locales": {
+      "tr": "./locales/tr.json"
+    },
     "ios": {
       "supportsTablet": true
     },
     "android": {
+      "versionCode": 6,
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
-        "foregroundImage": "./assets/android-icon-foreground.png",
-        "backgroundImage": "./assets/android-icon-background.png",
-        "monochromeImage": "./assets/android-icon-monochrome.png"
+        "backgroundColor": "#000000",
+        "foregroundImage": "./assets/photocell512px.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "package": "com.abdllhekc.photocell"
     },
     "web": {
       "favicon": "./assets/favicon.png"
-    }
+    },
+    "plugins": [
+      [
+        "expo-media-library",
+        {
+          "photosPermission": "Allow Photocell to access your photos to help you clean up duplicates and old screenshots.",
+          "savePhotosPermission": "Allow Photocell to save photos.",
+          "isAccessMediaLocationEnabled": true
+        }
+      ],
+      "expo-video",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/photocell512px.png",
+          "color": "#00F2FE"
+        }
+      ],
+      [
+        "expo-contacts",
+        {
+          "contactsPermission": "Allow Photocell to access your contacts to help you find and clean duplicates."
+        }
+      ]
+    ]
   }
 }
