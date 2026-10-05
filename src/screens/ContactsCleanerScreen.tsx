@@ -1,41 +1,21 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  ActivityIndicator,
-  Alert,
-} from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Alert } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
-import Animated, { FadeInDown, FadeIn, FadeInUp } from 'react-native-reanimated';
+import Animated, { FadeInDown, FadeInUp } from 'react-native-reanimated';
 import { LinearGradient } from 'expo-linear-gradient';
-import {
-  ArrowLeft,
-  Users,
-  Check,
-  Trash2,
-  UserX,
-  Copy,
-  ShieldCheck,
-  Sparkles,
-} from 'lucide-react-native';
+import { Users, Check, Trash2, UserX, Copy, ShieldCheck, Sparkles } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { FlashList } from '@shopify/flash-list';
 
 import { AtmosphericBackground } from '../components/glass/AtmosphericBackground';
 import { GlassPanel } from '../components/glass/GlassPanel';
 import { GlassButton } from '../components/glass/GlassButton';
-import { colors } from '../theme/colors';
-import {
-  scanDeviceContacts,
-  deleteChosenContacts,
-  CleanableContact,
-  ContactsScanResult,
-} from '../services/contactsCleaner';
-
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
+import { ScreenHeader } from '../components/layout/ScreenHeader';
+import { FilterChips } from '../components/layout/FilterChips';
+import { EmptyState, LoadingState } from '../components/layout/EmptyState';
+import { colors, alpha, radius } from '../theme/colors';
+import { scanDeviceContacts, deleteChosenContacts, ContactsScanResult } from '../services/contactsCleaner';
 
 type ContactFilter = 'all' | 'duplicates' | 'empty';
 
@@ -57,6 +37,7 @@ export const ContactsCleanerScreen: React.FC<Props> = ({ onBack }) => {
       setLoading(true);
       const res = await scanDeviceContacts();
       setScanResult(res);
+      setSelectedIds(new Set());
     } catch (e) {
       console.warn('Failed scanning contacts:', e);
     } finally {
@@ -81,14 +62,12 @@ export const ContactsCleanerScreen: React.FC<Props> = ({ onBack }) => {
     if (filter === 'duplicates') {
       return allItems.filter((i) => i.type === 'duplicate_number' || i.type === 'duplicate_name');
     }
-    if (filter === 'empty') {
-      return allItems.filter((i) => i.type === 'empty');
-    }
+    if (filter === 'empty') return allItems.filter((i) => i.type === 'empty');
     return allItems;
   }, [allItems, filter]);
 
   const toggleSelect = (id: string) => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    Haptics.selectionAsync().catch(() => {});
     setSelectedIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -97,12 +76,12 @@ export const ContactsCleanerScreen: React.FC<Props> = ({ onBack }) => {
     });
   };
 
-  const handleDeleteSelected = async () => {
+  const handleDeleteSelected = () => {
     if (selectedIds.size === 0 || deleting) return;
 
     Alert.alert(
-      t('contacts_cleaner.delete_selected', { count: selectedIds.size }),
-      t('settings.confirm'),
+      t('contacts_cleaner.delete_confirm_title'),
+      t('contacts_cleaner.delete_confirm_desc', { count: selectedIds.size }),
       [
         { text: t('settings.cancel'), style: 'cancel' },
         {
@@ -110,13 +89,19 @@ export const ContactsCleanerScreen: React.FC<Props> = ({ onBack }) => {
           style: 'destructive',
           onPress: async () => {
             setDeleting(true);
-            Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
             try {
-              const idsArray = Array.from(selectedIds);
-              await deleteChosenContacts(idsArray);
-              setSelectedIds(new Set());
-              Alert.alert(t('general.success'), t('contacts_cleaner.success_deleted'));
+              const allDeleted = await deleteChosenContacts(Array.from(selectedIds));
+              if (allDeleted) {
+                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+                Alert.alert(t('general.success'), t('contacts_cleaner.success_deleted'));
+              } else {
+                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
+                Alert.alert(t('general.error'), t('contacts_cleaner.delete_failed'));
+              }
               await loadContacts();
+            } catch (err) {
+              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
+              Alert.alert(t('general.error'), t('contacts_cleaner.delete_failed'));
             } finally {
               setDeleting(false);
             }
@@ -131,121 +116,119 @@ export const ContactsCleanerScreen: React.FC<Props> = ({ onBack }) => {
       <AtmosphericBackground />
 
       <SafeAreaView style={styles.safeArea} edges={['top']}>
-        {/* Top Bar */}
-        <Animated.View entering={FadeInDown.duration(400)} style={styles.topBar}>
-          <TouchableOpacity activeOpacity={0.8} onPress={onBack} style={styles.backButton}>
-            <ArrowLeft color={colors.textPrimary} size={20} strokeWidth={2.4} />
-          </TouchableOpacity>
-          <Text style={styles.topBarTitle}>{t('contacts_cleaner.title')}</Text>
-          <View style={{ width: 40 }} />
+        <ScreenHeader
+          title={t('contacts_cleaner.title')}
+          onBack={onBack}
+          onRefresh={loadContacts}
+        />
+
+        <Animated.View entering={FadeInDown.duration(400).delay(60)} style={styles.filterSection}>
+          <FilterChips
+            value={filter}
+            onChange={setFilter}
+            options={[
+              { value: 'all', label: t('contacts_cleaner.filter_all') },
+              { value: 'duplicates', label: t('contacts_cleaner.filter_duplicates') },
+              { value: 'empty', label: t('contacts_cleaner.filter_empty') },
+            ]}
+          />
         </Animated.View>
 
-        {/* Filter Pills */}
-        <Animated.View entering={FadeInDown.delay(100)} style={styles.filterSection}>
-          <View style={styles.filterRow}>
-            {(['all', 'duplicates', 'empty'] as ContactFilter[]).map((f) => {
-              const active = filter === f;
-              return (
-                <TouchableOpacity
-                  key={f}
-                  activeOpacity={0.8}
-                  onPress={() => {
-                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
-                    setFilter(f);
-                  }}
-                  style={[styles.filterPill, active && styles.filterPillActive]}
-                >
-                  <Text style={[styles.filterPillText, active && styles.filterPillTextActive]}>
-                    {f === 'all'
-                      ? t('contacts_cleaner.filter_all')
-                      : f === 'duplicates'
-                      ? t('contacts_cleaner.filter_duplicates')
-                      : t('contacts_cleaner.filter_empty')}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </View>
-        </Animated.View>
-
-        {/* List or Permission Request */}
         {loading ? (
-          <Animated.View entering={FadeIn} style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color={colors.neonCyan} style={{ marginBottom: 12 }} />
-            <Text style={styles.loadingText}>{t('dashboard.status.scanning')}</Text>
-          </Animated.View>
+          <LoadingState label={t('dashboard.status.scanning')} />
         ) : scanResult && !scanResult.hasPermission ? (
-          <Animated.View entering={FadeIn} style={styles.emptyContainer}>
-            <GlassPanel borderRadius={28} style={styles.emptyCard} contentStyle={styles.emptyCardContent}>
-              <ShieldCheck color={colors.warningAmber} size={52} style={{ marginBottom: 14 }} />
-              <Text style={styles.emptyTitle}>{t('contacts_cleaner.permission_title')}</Text>
-              <Text style={styles.emptySub}>{t('contacts_cleaner.permission_desc')}</Text>
+          <EmptyState
+            icon={ShieldCheck}
+            title={t('contacts_cleaner.permission_title')}
+            description={t('contacts_cleaner.permission_desc')}
+            accent={colors.warningAmber}
+            action={
               <GlassButton
-                borderRadius={20}
-                borderColor={colors.neonCyan}
+                borderRadius={radius.control}
+                borderColor={alpha(colors.primary, 0.45)}
                 style={styles.permissionBtn}
+                compact
                 onPress={loadContacts}
               >
-                <Sparkles color={colors.neonCyan} size={16} style={{ marginRight: 6 }} />
-                <Text style={styles.permissionBtnText}>{t('contacts_cleaner.grant_permission')}</Text>
+                <Sparkles color={colors.primary} size={15} />
+                <Text style={styles.permissionBtnText}>
+                  {t('contacts_cleaner.grant_permission')}
+                </Text>
               </GlassButton>
-            </GlassPanel>
-          </Animated.View>
+            }
+          />
         ) : filteredItems.length === 0 ? (
-          <Animated.View entering={FadeIn} style={styles.emptyContainer}>
-            <GlassPanel borderRadius={28} style={styles.emptyCard} contentStyle={styles.emptyCardContent}>
-              <Users color={colors.successMint} size={52} style={{ marginBottom: 14 }} />
-              <Text style={styles.emptyTitle}>{t('contacts_cleaner.all_contacts_clean')}</Text>
-            </GlassPanel>
-          </Animated.View>
+          <EmptyState
+            icon={Users}
+            title={t('contacts_cleaner.all_contacts_clean')}
+            description={t('contacts_cleaner.all_contacts_clean_desc')}
+            accent={colors.successMint}
+          />
         ) : (
           <FlashList
             data={filteredItems}
             keyExtractor={(item) => item.id}
-            contentContainerStyle={[
-              styles.listContent,
-              { paddingBottom: Math.max(90, insets.bottom + 60) },
-            ]}
+            extraData={selectedIds}
+            contentContainerStyle={{
+              paddingHorizontal: 20,
+              paddingTop: 8,
+              paddingBottom: Math.max(100, insets.bottom + 90),
+            }}
             renderItem={({ item }) => {
               const isSelected = selectedIds.has(item.id);
+              const isEmpty = item.type === 'empty';
+
               return (
                 <TouchableOpacity
-                  activeOpacity={0.88}
+                  activeOpacity={0.85}
                   onPress={() => toggleSelect(item.id)}
                   style={styles.cardWrapper}
+                  accessibilityRole="checkbox"
+                  accessibilityState={{ checked: isSelected }}
                 >
                   <GlassPanel
-                    borderRadius={24}
-                    borderColor={isSelected ? colors.dangerRose : 'rgba(226, 232, 240, 0.9)'}
-                    style={styles.contactCard}
-                    contentStyle={styles.contactCardContent}
-                    intensity={25}
+                    borderRadius={radius.card}
+                    borderColor={isSelected ? alpha(colors.dangerRose, 0.5) : colors.border}
+                    contentStyle={styles.cardContent}
+                    intensity={26}
                   >
-                    <View style={[styles.avatarBadge, item.type === 'empty' ? styles.avatarEmpty : styles.avatarDup]}>
-                      {item.type === 'empty' ? (
-                        <UserX color={colors.warningAmber} size={20} />
+                    <View
+                      style={[
+                        styles.avatar,
+                        {
+                          backgroundColor: alpha(
+                            isEmpty ? colors.warningAmber : colors.accent,
+                            0.12
+                          ),
+                          borderColor: alpha(isEmpty ? colors.warningAmber : colors.accent, 0.28),
+                        },
+                      ]}
+                    >
+                      {isEmpty ? (
+                        <UserX color={colors.warningAmber} size={19} />
                       ) : (
-                        <Copy color={colors.electricPurple} size={20} />
+                        <Copy color={colors.accent} size={19} />
                       )}
                     </View>
 
                     <View style={styles.cardDetails}>
                       <Text style={styles.contactName} numberOfLines={1}>
-                        {item.name || t('contacts_cleaner.empty_contacts')}
+                        {item.name || t('contacts_cleaner.unnamed_contact')}
                       </Text>
                       <Text style={styles.contactPhone} numberOfLines={1}>
-                        {item.phone || t('contacts_cleaner.empty_contacts')}
+                        {item.phone || t('contacts_cleaner.no_number')}
                       </Text>
-                      {item.duplicateWith && (
+                      {item.duplicateWith ? (
                         <Text style={styles.duplicateNotice} numberOfLines={1}>
-                          {`Eşleşen: ${item.duplicateWith}`}
+                          {t('contacts_cleaner.matched_with', { name: item.duplicateWith })}
                         </Text>
-                      )}
+                      ) : null}
                     </View>
 
-                    {/* Checkbox */}
                     <View style={[styles.checkbox, isSelected && styles.checkboxActive]}>
-                      {isSelected && <Check color="#FFF" size={14} strokeWidth={3} />}
+                      {isSelected && (
+                        <Check color={colors.textOnAccent} size={14} strokeWidth={3} />
+                      )}
                     </View>
                   </GlassPanel>
                 </TouchableOpacity>
@@ -254,7 +237,6 @@ export const ContactsCleanerScreen: React.FC<Props> = ({ onBack }) => {
           />
         )}
 
-        {/* Floating Delete Bar */}
         {selectedIds.size > 0 && (
           <Animated.View
             entering={FadeInUp.springify()}
@@ -265,12 +247,13 @@ export const ContactsCleanerScreen: React.FC<Props> = ({ onBack }) => {
               disabled={deleting}
               onPress={handleDeleteSelected}
               style={styles.deleteButton}
+              accessibilityRole="button"
             >
-              <LinearGradient colors={['#F43F5E', '#BE123C']} style={styles.deleteGradient}>
+              <LinearGradient colors={colors.roseGradient} style={styles.deleteGradient}>
                 {deleting ? (
-                  <ActivityIndicator color="#FFF" size="small" style={{ marginRight: 8 }} />
+                  <ActivityIndicator color={colors.textOnAccent} size="small" />
                 ) : (
-                  <Trash2 color="#FFF" size={18} style={{ marginRight: 8 }} />
+                  <Trash2 color={colors.textOnAccent} size={18} />
                 )}
                 <Text style={styles.deleteButtonText}>
                   {t('contacts_cleaner.delete_selected', { count: selectedIds.size })}
@@ -287,107 +270,39 @@ export const ContactsCleanerScreen: React.FC<Props> = ({ onBack }) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: colors.oledBlack,
+    backgroundColor: colors.canvas,
   },
   safeArea: {
     flex: 1,
   },
-  topBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(226, 232, 240, 0.9)',
-  },
-  backButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: 'rgba(255, 255, 255, 0.9)',
-    borderWidth: 1,
-    borderColor: 'rgba(226, 232, 240, 0.9)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  topBarTitle: {
-    fontSize: 18,
-    fontWeight: '900',
-    color: colors.textPrimary,
-  },
   filterSection: {
     paddingHorizontal: 20,
     paddingTop: 16,
-    paddingBottom: 10,
-  },
-  filterRow: {
-    flexDirection: 'row',
-    gap: 8,
-  },
-  filterPill: {
-    flex: 1,
-    paddingVertical: 8,
-    borderRadius: 14,
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: '#CBD5E1',
-    alignItems: 'center',
-  },
-  filterPillActive: {
-    backgroundColor: 'rgba(147, 51, 234, 0.12)',
-    borderColor: colors.neonCyan,
-    borderWidth: 1.5,
-  },
-  filterPillText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: colors.textSecondary,
-  },
-  filterPillTextActive: {
-    color: colors.neonCyan,
-    fontWeight: '800',
-  },
-  listContent: {
-    paddingHorizontal: 20,
-    paddingTop: 8,
-    paddingBottom: 120,
+    paddingBottom: 12,
   },
   cardWrapper: {
-    marginBottom: 12,
+    marginBottom: 10,
   },
-  contactCard: {
-    borderRadius: 24,
-  },
-  contactCardContent: {
-    padding: 14,
+  cardContent: {
+    padding: 13,
     flexDirection: 'row',
     alignItems: 'center',
   },
-  avatarBadge: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
+  avatar: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    borderWidth: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: 14,
-  },
-  avatarDup: {
-    backgroundColor: 'rgba(168, 85, 247, 0.14)',
-    borderWidth: 1,
-    borderColor: 'rgba(168, 85, 247, 0.3)',
-  },
-  avatarEmpty: {
-    backgroundColor: 'rgba(245, 158, 11, 0.14)',
-    borderWidth: 1,
-    borderColor: 'rgba(245, 158, 11, 0.3)',
+    marginRight: 13,
   },
   cardDetails: {
     flex: 1,
     paddingRight: 8,
   },
   contactName: {
-    fontSize: 15,
+    fontSize: 14.5,
     fontWeight: '800',
     color: colors.textPrimary,
     marginBottom: 2,
@@ -404,11 +319,11 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   checkbox: {
-    width: 26,
-    height: 26,
+    width: 25,
+    height: 25,
     borderRadius: 8,
     borderWidth: 2,
-    borderColor: '#CBD5E1',
+    borderColor: colors.borderStrong,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -416,9 +331,18 @@ const styles = StyleSheet.create({
     backgroundColor: colors.dangerRose,
     borderColor: colors.dangerRose,
   },
+  permissionBtn: {
+    width: 'auto',
+    height: 44,
+  },
+  permissionBtnText: {
+    fontSize: 13,
+    fontWeight: '800',
+    color: colors.primary,
+    marginLeft: 7,
+  },
   floatingBar: {
     position: 'absolute',
-    bottom: 24,
     left: 20,
     right: 20,
     zIndex: 50,
@@ -430,7 +354,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     shadowColor: colors.dangerRose,
     shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.4,
+    shadowOpacity: 0.32,
     shadowRadius: 16,
     elevation: 8,
   },
@@ -439,55 +363,11 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    gap: 9,
   },
   deleteButtonText: {
-    color: '#FFF',
+    color: colors.textOnAccent,
     fontSize: 14,
     fontWeight: '900',
-  },
-  loadingContainer: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 60,
-  },
-  loadingText: {
-    color: colors.textSecondary,
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  emptyContainer: {
-    paddingHorizontal: 20,
-    paddingVertical: 40,
-  },
-  emptyCard: {
-    borderRadius: 28,
-  },
-  emptyCardContent: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 32,
-  },
-  emptyTitle: {
-    fontSize: 18,
-    fontWeight: '900',
-    color: colors.textPrimary,
-    marginBottom: 6,
-    textAlign: 'center',
-  },
-  emptySub: {
-    fontSize: 13,
-    color: colors.textSecondary,
-    textAlign: 'center',
-    lineHeight: 18,
-    marginBottom: 18,
-  },
-  permissionBtn: {
-    height: 44,
-    paddingHorizontal: 20,
-  },
-  permissionBtnText: {
-    fontSize: 13,
-    fontWeight: '800',
-    color: colors.neonCyan,
   },
 });

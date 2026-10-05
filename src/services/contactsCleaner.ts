@@ -22,7 +22,7 @@ let deletedIds = new Set<string>();
  */
 function getContactsModule(): any {
   try {
-    const mod = require('expo-contacts');
+    const mod = require('expo-contacts/legacy');
     if (mod && (mod.getContactsAsync || mod.default?.getContactsAsync)) {
       return mod.default || mod;
     }
@@ -153,27 +153,25 @@ export async function scanDeviceContacts(): Promise<ContactsScanResult> {
 }
 
 /**
- * Delete chosen contacts from device
+ * Delete chosen contacts from device.
+ *
+ * Resolves true only when every contact was really removed. A contact that
+ * fails to delete is not remembered as deleted, so it shows up again on the
+ * next scan instead of silently vanishing from the list while still on the phone.
  */
 export async function deleteChosenContacts(contactIds: string[]): Promise<boolean> {
-  try {
-    const Contacts = getContactsModule();
-    if (Contacts && Contacts.removeContactAsync) {
-      for (const id of contactIds) {
-        try {
-          await Contacts.removeContactAsync(id);
-        } catch (e) {
-          console.warn(`Failed deleting contact ${id}:`, e);
-        }
-        deletedIds.add(id);
-      }
-      return true;
-    } else {
-      contactIds.forEach((id) => deletedIds.add(id));
-      return true;
+  const Contacts = getContactsModule();
+  if (!Contacts || !Contacts.removeContactAsync) return false;
+
+  let allDeleted = true;
+  for (const id of contactIds) {
+    try {
+      await Contacts.removeContactAsync(id);
+      deletedIds.add(id);
+    } catch (e) {
+      allDeleted = false;
+      console.warn(`Failed deleting contact ${id}:`, e);
     }
-  } catch (err) {
-    console.error('Failed deleting contacts:', err);
-    return false;
   }
+  return allDeleted;
 }

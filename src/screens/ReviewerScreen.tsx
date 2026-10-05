@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
   View,
   Text,
@@ -14,11 +14,11 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useTranslation } from 'react-i18next';
 import { GestureDetector, Gesture } from 'react-native-gesture-handler';
 import { LinearGradient } from 'expo-linear-gradient';
+import { scheduleOnRN } from 'react-native-worklets';
 import Animated, {
   useSharedValue,
   useAnimatedStyle,
   withSpring,
-  runOnJS,
   withTiming,
   FadeInDown,
   FadeInUp,
@@ -50,7 +50,7 @@ import * as Haptics from 'expo-haptics';
 import { AtmosphericBackground } from '../components/glass/AtmosphericBackground';
 import { GlassPanel } from '../components/glass/GlassPanel';
 import { GlassButton } from '../components/glass/GlassButton';
-import { colors } from '../theme/colors';
+import { colors, alpha, radius } from '../theme/colors';
 import { deleteAssets, PhotoAsset } from '../services/mediaScanner';
 import { recordCleanedPhotos, formatByteSize } from '../services/cacheCleaner';
 import { AnalyticsService } from '../services/analyticsService';
@@ -60,14 +60,15 @@ const { width, height } = Dimensions.get('window');
 interface Props {
   assets: PhotoAsset[];
   groupedAssets?: PhotoAsset[][];
-  onBack: () => void;
+  /** Receives every asset id the user acted on, so timeline progress persists. */
+  onFinish: (reviewedIds: string[]) => void;
   categoryTitle?: string;
 }
 
 export const ReviewerScreen = ({
   assets,
   groupedAssets,
-  onBack,
+  onFinish,
   categoryTitle,
 }: Props) => {
   const { t } = useTranslation();
@@ -85,6 +86,29 @@ export const ReviewerScreen = ({
 
   // Fullscreen Photo Inspection Modal State
   const [fullscreenAsset, setFullscreenAsset] = useState<PhotoAsset | null>(null);
+
+  // Every asset the user kept or deleted this session. Reported on the way out.
+  const reviewedIdsRef = useRef<Set<string>>(new Set());
+
+  // `isProcessing` state drives the UI (disabling buttons), but the pan
+  // gesture is memoized on [currentIndex, currentAsset] and does NOT include
+  // isProcessing in its deps — so its closure can capture a stale, pre-delete
+  // snapshot of that state forever until currentIndex changes. A fast second
+  // swipe on the same card could then call handleDeleteSingle again for the
+  // same asset while the first deletion was still in flight, firing two
+  // concurrent native delete calls — a likely cause of the app crashing
+  // outright while deleting. A ref is immune to closure staleness: reading
+  // `.current` always sees the live value, regardless of which render's
+  // closure is doing the reading.
+  const isProcessingRef = useRef(false);
+  const setProcessing = useCallback((value: boolean) => {
+    isProcessingRef.current = value;
+    setIsProcessing(value);
+  }, []);
+
+  const finishReview = useCallback(() => {
+    onFinish(Array.from(reviewedIdsRef.current));
+  }, [onFinish]);
 
   const translateX = useSharedValue(0);
   const translateY = useSharedValue(0);
@@ -125,6 +149,17 @@ export const ReviewerScreen = ({
   const currentAsset = assets[currentIndex];
   const nextAsset = assets[currentIndex + 1];
 
+  // The swipe worklets must not capture the per-render handlers below: they are
+  // async closures that go stale, and handing them to the UI runtime is what
+  // crashed the app natively on a fast swipe-to-delete. They call these two
+  // stable wrappers instead, which always forward to the latest handler.
+  const handlersRef = useRef({ del: () => {}, keep: () => {} });
+  const runDelete = useCallback(() => handlersRef.current.del(), []);
+  const runKeep = useCallback(() => handlersRef.current.keep(), []);
+  // True from the moment a swipe commits until the next card is ready, so a
+  // second gesture can't start on a card that is already flying off.
+  const swipeLocked = useSharedValue(false);
+
   const panGesture = useMemo(() => {
     return Gesture.Pan()
       .onStart(() => {
@@ -132,44 +167,50 @@ export const ReviewerScreen = ({
         startY.value = translateY.value;
       })
       .onUpdate((event) => {
+        if (swipeLocked.value) return;
         translateX.value = startX.value + event.translationX;
         translateY.value = startY.value + event.translationY;
       })
       .onEnd((event) => {
+        if (swipeLocked.value) return;
         const shouldDelete =
           translateX.value < -width * 0.3 || event.velocityX < -800;
         const shouldKeep =
           translateX.value > width * 0.3 || event.velocityX > 800;
 
         if (shouldDelete) {
-          translateX.value = withTiming(-width * 1.5, { duration: 250 }, () => {
-            runOnJS(handleDeleteSingle)();
+          swipeLocked.value = true;
+          translateX.value = withTiming(-width * 1.5, { duration: 250 }, (finished) => {
+            if (finished) scheduleOnRN(runDelete);
           });
         } else if (shouldKeep) {
-          translateX.value = withTiming(width * 1.5, { duration: 250 }, () => {
-            runOnJS(handleKeepSingle)();
+          swipeLocked.value = true;
+          translateX.value = withTiming(width * 1.5, { duration: 250 }, (finished) => {
+            if (finished) scheduleOnRN(runKeep);
           });
         } else {
           translateX.value = withSpring(0, { damping: 18, stiffness: 200 });
           translateY.value = withSpring(0, { damping: 18, stiffness: 200 });
         }
       });
-  }, [currentIndex, currentAsset]);
+  }, [runDelete, runKeep]);
 
   const nextPhoto = () => {
     setCurrentIndex((prev) => prev + 1);
     translateX.value = 0;
     translateY.value = 0;
-    setIsProcessing(false);
+    swipeLocked.value = false;
+    setProcessing(false);
   };
 
   const handleDeleteSingle = async () => {
-    if (!currentAsset) return;
-    setIsProcessing(true);
+    if (!currentAsset || isProcessingRef.current) return;
+    setProcessing(true);
+    reviewedIdsRef.current.add(currentAsset.id);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(
       () => {}
     );
-    const freed = currentAsset.fileSize || 2.5 * 1024 * 1024;
+    const freed = currentAsset.fileSize || 0;
     const success = await deleteAssets([currentAsset]);
     if (success) {
       setSessionFreedBytes((prev) => prev + freed);
@@ -181,30 +222,37 @@ export const ReviewerScreen = ({
       ).catch(() => {});
       nextPhoto();
     } else {
-      setIsProcessing(false);
+      setProcessing(false);
+      swipeLocked.value = false;
       translateX.value = withSpring(0);
       translateY.value = withSpring(0);
     }
   };
 
   const handleKeepSingle = () => {
+    if (isProcessingRef.current) return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    if (currentAsset) reviewedIdsRef.current.add(currentAsset.id);
     nextPhoto();
   };
 
+  handlersRef.current = { del: handleDeleteSingle, keep: handleKeepSingle };
+
   const triggerSwipeLeft = () => {
-    if (isProcessing) return;
+    if (isProcessingRef.current || swipeLocked.value) return;
+    swipeLocked.value = true;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
-    translateX.value = withTiming(-width * 1.5, { duration: 280 }, () => {
-      runOnJS(handleDeleteSingle)();
+    translateX.value = withTiming(-width * 1.5, { duration: 280 }, (finished) => {
+      if (finished) scheduleOnRN(runDelete);
     });
   };
 
   const triggerSwipeRight = () => {
-    if (isProcessing) return;
+    if (isProcessingRef.current || swipeLocked.value) return;
+    swipeLocked.value = true;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
-    translateX.value = withTiming(width * 1.5, { duration: 280 }, () => {
-      runOnJS(handleKeepSingle)();
+    translateX.value = withTiming(width * 1.5, { duration: 280 }, (finished) => {
+      if (finished) scheduleOnRN(runKeep);
     });
   };
 
@@ -288,20 +336,21 @@ export const ReviewerScreen = ({
   };
 
   const handleConfirmGroup = async () => {
-    if (!groupedAssets || !groupedAssets[groupIndex]) return;
-    setIsProcessing(true);
+    if (!groupedAssets || !groupedAssets[groupIndex] || isProcessingRef.current) return;
+    setProcessing(true);
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(
       () => {}
     );
 
     const currentGroup = groupedAssets[groupIndex];
+    currentGroup.forEach((asset) => reviewedIdsRef.current.add(asset.id));
     const itemsToDelete = currentGroup.filter((asset) =>
       toDeleteIds.has(asset.id)
     );
 
     if (itemsToDelete.length > 0) {
       const freed = itemsToDelete.reduce(
-        (sum, a) => sum + (a.fileSize || 2.5 * 1024 * 1024),
+        (sum, a) => sum + (a.fileSize || 0),
         0
       );
       await deleteAssets(itemsToDelete);
@@ -315,7 +364,7 @@ export const ReviewerScreen = ({
     }
 
     setGroupIndex((prev) => prev + 1);
-    setIsProcessing(false);
+    setProcessing(false);
   };
 
   // Done condition calculation
@@ -326,11 +375,7 @@ export const ReviewerScreen = ({
   if (isDone) {
     return (
       <View style={styles.container}>
-        <LinearGradient
-          colors={['rgba(16,185,129,0.18)', 'transparent']}
-          style={styles.ambientGlow}
-          pointerEvents="none"
-        />
+        <AtmosphericBackground />
         <Animated.View
           entering={ZoomIn.duration(600).springify()}
           style={styles.doneContainer}
@@ -338,25 +383,21 @@ export const ReviewerScreen = ({
           {/* Glowing Ring */}
           <View style={styles.doneIconRing}>
             <LinearGradient
-              colors={[colors.neonCyan, colors.successMint]}
+              colors={[colors.primary, colors.successMint]}
               style={styles.doneIconGradient}
             >
-              <Check color="#0F172A" size={44} strokeWidth={3} />
+              <Check color={colors.textOnAccent} size={40} strokeWidth={3} />
             </LinearGradient>
           </View>
 
-          <Text style={styles.doneTitle}>
-            {t('reviewer.done_title', 'Hepsi Bu Kadar!')}
-          </Text>
-          <Text style={styles.doneDesc}>
-            {t('reviewer.done_subtitle', t('reviewer.done_desc', 'Tüm fotoğrafları başarıyla incelediniz.'))}
-          </Text>
+          <Text style={styles.doneTitle}>{t('reviewer.done_title')}</Text>
+          <Text style={styles.doneDesc}>{t('reviewer.done_subtitle')}</Text>
 
           {/* Session Freed Highlight Badge */}
           {sessionFreedBytes > 0 && (
             <GlassPanel
               borderRadius={20}
-              borderColor={colors.successMint}
+              borderColor={alpha(colors.successMint, 0.35)}
               style={styles.freedBadge}
               contentStyle={styles.freedBadgeContent}
               intensity={30}
@@ -367,20 +408,17 @@ export const ReviewerScreen = ({
                 style={{ marginRight: 8 }}
               />
               <Text style={styles.freedBadgeText}>
-                {t('reviewer.done_freed', {
-                  size: formatByteSize(sessionFreedBytes),
-                  defaultValue: `${formatByteSize(sessionFreedBytes)} alan temizlendi`,
-                })}
+                {t('reviewer.done_freed', { size: formatByteSize(sessionFreedBytes) })}
               </Text>
             </GlassPanel>
           )}
 
           <GlassButton
-            borderRadius={28}
-            borderColor={colors.neonCyan}
-            glowColor={colors.neonCyan}
+            borderRadius={radius.control}
+            borderColor={alpha(colors.primary, 0.4)}
+            glowColor={colors.primary}
             style={styles.homeBtn}
-            onPress={onBack}
+            onPress={finishReview}
           >
             <View style={styles.homeBtnContent}>
               <Home
@@ -388,9 +426,7 @@ export const ReviewerScreen = ({
                 size={20}
                 style={{ marginRight: 8 }}
               />
-              <Text style={styles.homeBtnText}>
-                {t('reviewer.done_btn_home', t('reviewer.back_home', 'Ana Ekrana Dön'))}
-              </Text>
+              <Text style={styles.homeBtnText}>{t('reviewer.done_btn_home')}</Text>
             </View>
           </GlassButton>
         </Animated.View>
@@ -424,7 +460,7 @@ export const ReviewerScreen = ({
                 Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(
                   () => {}
                 );
-                onBack();
+                finishReview();
               }}
               style={styles.topBackButton}
             >
@@ -510,6 +546,7 @@ export const ReviewerScreen = ({
                     <Image
                       source={{ uri: asset.uri }}
                       style={styles.groupCardImage}
+                      resizeMethod="resize"
                       resizeMode="cover"
                     />
 
@@ -522,7 +559,7 @@ export const ReviewerScreen = ({
                           fill="#F59E0B"
                           style={{ marginRight: 4 }}
                         />
-                        <Text style={styles.bestBadgeText}>EN İYİ</Text>
+                        <Text style={styles.bestBadgeText}>{t('reviewer.best_badge')}</Text>
                       </View>
                     )}
 
@@ -579,7 +616,7 @@ export const ReviewerScreen = ({
                           style={{ marginRight: 4 }}
                         />
                         <Text style={styles.cardInfoText}>
-                          {(asset.fileSize / (1024 * 1024)).toFixed(1)} MB
+                          {formatByteSize(asset.fileSize)}
                         </Text>
                       </View>
                     )}
@@ -622,7 +659,7 @@ export const ReviewerScreen = ({
               activeOpacity={0.8}
             >
               <Sparkles
-                color={colors.neonCyan}
+                color={colors.primary}
                 size={16}
                 style={{ marginRight: 6 }}
               />
@@ -715,7 +752,7 @@ export const ReviewerScreen = ({
               {fullscreenAsset.fileSize && (
                 <View style={styles.fullscreenSizePill}>
                   <Text style={styles.fullscreenSizeText}>
-                    {(fullscreenAsset.fileSize / (1024 * 1024)).toFixed(1)} MB
+                    {formatByteSize(fullscreenAsset.fileSize)}
                   </Text>
                 </View>
               )}
@@ -726,6 +763,7 @@ export const ReviewerScreen = ({
               <Image
                 source={{ uri: fullscreenAsset.uri }}
                 style={styles.fullscreenImage}
+                resizeMethod="resize"
                 resizeMode="contain"
               />
             </View>
@@ -792,7 +830,7 @@ export const ReviewerScreen = ({
               Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(
                 () => {}
               );
-              onBack();
+              finishReview();
             }}
             style={styles.topBackButton}
           >
@@ -827,7 +865,7 @@ export const ReviewerScreen = ({
         onPress={() => currentAsset && setFullscreenAsset(currentAsset)}
         style={styles.fullscreenHintRow}
       >
-        <Maximize2 color={colors.neonCyan} size={14} style={{ marginRight: 6 }} />
+        <Maximize2 color={colors.primary} size={14} style={{ marginRight: 6 }} />
         <Text style={styles.fullscreenHintText}>
           {t('reviewer.fullscreen_hint')}
         </Text>
@@ -842,6 +880,7 @@ export const ReviewerScreen = ({
               <Image
                 source={{ uri: nextAsset.uri }}
                 style={styles.image}
+                resizeMethod="resize"
                 resizeMode="cover"
               />
             </Animated.View>
@@ -859,6 +898,7 @@ export const ReviewerScreen = ({
                   <Image
                     source={{ uri: currentAsset.uri }}
                     style={styles.image}
+                    resizeMethod="resize"
                     resizeMode="cover"
                   />
 
@@ -902,12 +942,12 @@ export const ReviewerScreen = ({
                         style={{ marginRight: 8 }}
                       />
                       <Text style={styles.metadataText}>
-                        {(currentAsset.fileSize / (1024 * 1024)).toFixed(1)} MB
+                        {formatByteSize(currentAsset.fileSize)}
                       </Text>
                       {currentAsset.sharpnessScore !== undefined && (
                         <View style={styles.blurBadgeInCard}>
                           <ImageOff
-                            color={colors.electricPurple}
+                            color={colors.accent}
                             size={13}
                             style={{ marginRight: 4 }}
                           />
@@ -1000,7 +1040,7 @@ export const ReviewerScreen = ({
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: colors.oledBlack,
+    backgroundColor: colors.canvas,
   },
   topBar: {
     flexDirection: 'row',
@@ -1012,10 +1052,10 @@ const styles = StyleSheet.create({
   topBackButton: {
     width: 40,
     height: 40,
-    borderRadius: 14,
-    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+    borderRadius: radius.chip,
+    backgroundColor: colors.surface,
     borderWidth: 1,
-    borderColor: colors.whiteBorderLight,
+    borderColor: colors.border,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -1023,7 +1063,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   eyebrowText: {
-    color: colors.neonCyan,
+    color: colors.primary,
     fontSize: 12,
     fontWeight: '800',
     letterSpacing: 1.2,
@@ -1037,12 +1077,12 @@ const styles = StyleSheet.create({
   },
   progressTrack: {
     height: 3,
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    backgroundColor: colors.surfaceSunken,
     width: '100%',
   },
   progressFill: {
     height: '100%',
-    backgroundColor: colors.neonCyan,
+    backgroundColor: colors.primary,
   },
   fullscreenHintRow: {
     flexDirection: 'row',
@@ -1051,7 +1091,7 @@ const styles = StyleSheet.create({
     paddingVertical: 6,
   },
   fullscreenHintText: {
-    color: colors.neonCyan,
+    color: colors.primary,
     fontSize: 12,
     fontWeight: '700',
     letterSpacing: 0.5,
@@ -1072,21 +1112,21 @@ const styles = StyleSheet.create({
   card: {
     width: '100%',
     height: '100%',
-    backgroundColor: '#0F172A',
-    borderRadius: 28,
+    backgroundColor: colors.surfaceSunken,
+    borderRadius: radius.panel,
     overflow: 'hidden',
-    borderWidth: 1.5,
-    borderColor: 'rgba(255, 255, 255, 0.18)',
-    shadowColor: '#000',
+    borderWidth: 1,
+    borderColor: colors.border,
+    shadowColor: '#0F172A',
     shadowOffset: { width: 0, height: 16 },
-    shadowOpacity: 0.55,
+    shadowOpacity: 0.16,
     shadowRadius: 28,
     elevation: 12,
   },
   backCard: {
     position: 'absolute',
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
+    borderColor: colors.border,
   },
   image: {
     width: '100%',
@@ -1128,10 +1168,10 @@ const styles = StyleSheet.create({
     marginLeft: 8,
     paddingLeft: 8,
     borderLeftWidth: 1,
-    borderLeftColor: 'rgba(255, 255, 255, 0.2)',
+    borderLeftColor: colors.border,
   },
   blurBadgeText: {
-    color: colors.electricPurple,
+    color: colors.accent,
     fontWeight: '800',
     fontSize: 12,
   },
@@ -1139,7 +1179,7 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: '#0F172A',
+    backgroundColor: colors.surfaceSunken,
   },
   cardText: {
     color: colors.textMuted,
@@ -1286,15 +1326,15 @@ const styles = StyleSheet.create({
     marginLeft: 6,
   },
   fullscreenSizePill: {
-    backgroundColor: 'rgba(0, 242, 254, 0.15)',
+    backgroundColor: 'rgba(255, 255, 255, 0.14)',
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 14,
     borderWidth: 1,
-    borderColor: 'rgba(0, 242, 254, 0.35)',
+    borderColor: 'rgba(255, 255, 255, 0.24)',
   },
   fullscreenSizeText: {
-    color: colors.neonCyan,
+    color: '#FFFFFF',
     fontSize: 12,
     fontWeight: '800',
   },
@@ -1324,9 +1364,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
+    backgroundColor: colors.surface,
     borderWidth: 1,
-    borderColor: colors.whiteBorderLight,
+    borderColor: colors.border,
     paddingHorizontal: 16,
     paddingVertical: 10,
     marginHorizontal: 20,
@@ -1386,13 +1426,13 @@ const styles = StyleSheet.create({
     left: 10,
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(245, 158, 11, 0.95)',
+    backgroundColor: colors.warningAmber,
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 10,
   },
   bestBadgeText: {
-    color: '#0F172A',
+    color: '#FFFFFF',
     fontSize: 10,
     fontWeight: '900',
     letterSpacing: 0.5,
@@ -1450,7 +1490,7 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(255, 255, 255, 0.1)',
   },
   cardInfoText: {
-    color: colors.textSecondary,
+    color: 'rgba(255, 255, 255, 0.92)',
     fontSize: 11,
     fontWeight: '700',
   },
@@ -1484,14 +1524,14 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(0, 242, 254, 0.1)',
+    backgroundColor: alpha(colors.primary, 0.09),
     borderWidth: 1,
-    borderColor: 'rgba(0, 242, 254, 0.3)',
+    borderColor: alpha(colors.primary, 0.26),
     borderRadius: 16,
     paddingVertical: 10,
   },
   presetButtonText: {
-    color: colors.neonCyan,
+    color: colors.primary,
     fontSize: 12,
     fontWeight: '800',
   },
@@ -1500,9 +1540,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
+    backgroundColor: colors.surface,
     borderWidth: 1,
-    borderColor: colors.whiteBorderLight,
+    borderColor: colors.border,
     borderRadius: 16,
     paddingVertical: 10,
   },
@@ -1527,13 +1567,6 @@ const styles = StyleSheet.create({
   },
 
   // --- DONE SCREEN STYLES ---
-  ambientGlow: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    height: 400,
-  },
   doneContainer: {
     flex: 1,
     alignItems: 'center',
@@ -1549,9 +1582,9 @@ const styles = StyleSheet.create({
     marginBottom: 20,
     shadowColor: colors.successMint,
     shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.5,
-    shadowRadius: 24,
-    elevation: 10,
+    shadowOpacity: 0.28,
+    shadowRadius: 22,
+    elevation: 8,
   },
   doneIconGradient: {
     width: '100%',
@@ -1599,7 +1632,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   homeBtnText: {
-    color: colors.textPrimary,
+    color: colors.primary,
     fontSize: 15,
     fontWeight: '800',
   },

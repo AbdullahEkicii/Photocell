@@ -27,13 +27,16 @@
       "scan_step_blurry": "Yapay Zeka ile Bulanıklık Analizi Yapılıyor ({{current}}/{{total}})...",
       "scan_step_sizes": "Depolama Tasarrufu ve Boyutlar Hesaplanıyor...",
       "scan_items_count": "{{scanned}} / {{total}} Fotoğraf İncelendi",
-      "scan_estimated_time": "Yaklaşık {{seconds}} saniye kaldı"
+      "scan_estimated_time": "Yaklaşık {{seconds}} saniye kaldı",
+      "scan_failed": "Tarama tamamlanamadı",
+      "retry": "Tekrar Dene",
+      "background_scanning": "Arka planda taranıyor: {{scanned}} / {{total}}"
     }
   },
   "nav": {
     "home": "Giriş",
     "photos": "Temizle",
-    "timeline": "Zaman Tüneli",
+    "timeline": "Zaman",
     "tools": "Araçlar",
     "videos": "Videolar",
     "vault": "Kasa",
@@ -70,7 +73,8 @@
     "video_comp_title": "Video Sıkıştırıcı",
     "video_comp_desc": "4K ve 1080P ağır videoları donanım hızlandırmasıyla sıkıştırın.",
     "contacts_title": "Kişi & Rehber Temizleyici",
-    "contacts_desc": "Yinelenen ve numarasız boş kişileri tek tıkla temizleyin."
+    "contacts_desc": "Yinelenen ve numarasız boş kişileri tek tıkla temizleyin.",
+    "badge": "HEPSİ BİR ARADA"
   },
   "contacts_cleaner": {
     "title": "Rehber Temizleyici",
@@ -86,7 +90,14 @@
     "filter_empty": "Boş Kayıtlar",
     "permission_title": "Rehber Erişimi Gerekli",
     "permission_desc": "Yinelenen numaraları ve boş kişileri tespit edebilmek için lütfen rehber erişim izni verin.",
-    "grant_permission": "Rehber İznini Ver"
+    "grant_permission": "Rehber İznini Ver",
+    "all_contacts_clean_desc": "Yinelenen numara veya boş kayıt bulunamadı.",
+    "matched_with": "Eşleşen: {{name}}",
+    "unnamed_contact": "İsimsiz kişi",
+    "no_number": "Numara yok",
+    "delete_confirm_title": "Seçilen Kişiler Silinsin mi?",
+    "delete_confirm_desc": "{{count}} kişi rehberinizden kalıcı olarak silinecek.",
+    "delete_failed": "Kişiler silinemedi. Lütfen rehber izinlerini kontrol edin."
   },
   "guide": {
     "title": "FotoSil Kullanım Rehberi",
@@ -98,17 +109,23 @@
     "step3_title": "3. Medya & Gizlilik Araçları",
     "step3_desc": "Fotoğraf/video sıkıştırıcı ile %80 yer kazanın, EXIF temizleyici ile GPS konumunuzu gizleyin.",
     "got_it": "Anladım, Başlayalım!",
-    "open_guide": "Kullanım Kılavuzu & İpuçları"
+    "open_guide": "Kullanım Kılavuzu & İpuçları",
+    "next_step": "İlerle"
   },
   "storage_widget": {
     "title": "Depolama Sağlığı & Bellek",
-    "health_score": "%98 SAĞLIKLI",
     "turbo_clean": "Belleği Rahatlat (Turbo)",
-    "turbo_success": "Geçici sistem önbelleği ve RAM başarıyla rahatlatıldı!",
+    "turbo_success": "Geçici dosyalar temizlendi, {{size}} yer açıldı!",
     "photos_label": "Fotoğraflar",
     "videos_label": "Videolar",
     "system_label": "Sistem/Önbellek",
-    "free_label": "Boş Alan"
+    "free_label": "Boş Alan",
+    "measuring": "Depolama ölçülüyor...",
+    "capacity_line": "{{total}} alanın {{used}} kadarı dolu",
+    "free_percent": "%{{percent}} BOŞ",
+    "estimate_note": "Medya boyutları örnekleme ile tahmin edilmiştir.",
+    "turbo_freed": "{{size}} boşaltıldı",
+    "turbo_already_clean": "Temizlenecek geçici dosya bulunamadı."
   },
   "photo_compressor": {
     "title": "Fotoğraf Sıkıştırıcı",
@@ -124,7 +141,8 @@
     "save_copy": "Sadece Yeni Kopyayı Kaydet",
     "success_replaced": "Orijinal fotoğraf silindi ve optimize edilmiş hali galeriye kaydedildi!",
     "success_saved": "Sıkıştırılmış fotoğraf yeni dosya olarak galeriye eklendi!",
-    "no_photos": "Sıkıştırılacak fotoğraf bulunamadı."
+    "no_photos": "Sıkıştırılacak fotoğraf bulunamadı.",
+    "no_photos_desc": "Sıkıştırmaya değecek büyüklükte fotoğraf bulunamadı."
   },
   "exif_cleaner": {
     "title": "EXIF & GPS Gizlilik Temizleyici",
@@ -133,7 +151,13 @@
     "clean_and_save": "Meta Verileri Temizle & Kaydet",
     "clean_success": "Konum ve kamera meta verileri tamamen temizlendi. Güvenle paylaşabilirsiniz!",
     "clean_badge": "%100 GİZLİ & GÜVENLİ",
-    "info_text": "Akıllı telefon kameraları fotoğraflara evinizin veya bulunduğunuz yerin kesin enlem/boylam GPS koordinatlarını ekler. Bu araç bu bilgileri kaldırır."
+    "info_text": "Akıllı telefon kameraları fotoğraflara evinizin veya bulunduğunuz yerin kesin enlem/boylam GPS koordinatlarını ekler. Bu araç bu bilgileri kaldırır.",
+    "clean_action": "Temizle",
+    "cleaned_badge": "TEMİZLENDİ",
+    "clean_failed": "Meta veriler temizlenemedi. Lütfen galeri izinlerini kontrol edin.",
+    "clean_copy_only": "Temiz kopya kaydedildi, ancak silmeyi onaylamadığınız için konum bilgisi içeren orijinal fotoğraf hâlâ duruyor. Paylaşmadan önce orijinali silin.",
+    "no_photos": "Konum verisi taşıyan fotoğraf yok",
+    "no_photos_desc": "Taranan fotoğraflarda GPS veya cihaz bilgisi bulunamadı."
   },
   "heavy_media": {
     "title": "Ağır Medya Radarı",
@@ -143,7 +167,13 @@
     "filter_50mb": "> 50 MB",
     "filter_25mb": "> 25 MB",
     "delete_selected": "Seçilen {{count}} Öğeyi Sil ({{size}})",
-    "no_heavy_files": "Seçilen boyutta ağır medya dosyası bulunamadı."
+    "no_heavy_files": "Seçilen boyutta ağır medya dosyası bulunamadı.",
+    "no_heavy_files_desc": "Seçtiğiniz eşiğin üzerinde dosya bulunamadı. Filtreyi düşürmeyi deneyin.",
+    "permission_title": "Galeri Erişimi Gerekli",
+    "permission_desc": "Dosya boyutlarını okuyabilmek için galeri erişim izni vermeniz gerekiyor.",
+    "delete_confirm_title": "Seçilenler Silinsin mi?",
+    "delete_confirm_desc": "{{count}} dosya kalıcı olarak silinecek ve {{size}} yer açılacak.",
+    "delete_failed": "Dosyalar silinemedi. Lütfen galeri izinlerini kontrol edin."
   },
   "timeline": {
     "title": "Zaman Tüneli Detoksu",
@@ -154,13 +184,15 @@
     "clean_month_cta": "Bu Ayı Temizle",
     "reviewed_badge": "Tamamlandı",
     "swipe_hint": "👈 Sola Sürükle: Sil | Sağa Sürükle: Tut 👉",
-    "month_summary": "{{count}} Fotoğraf • {{size}}",
+    "month_summary": "{{count}} fotoğraf • {{size}}",
     "empty_timeline": "Henüz incelenecek fotoğraf bulunamadı.",
     "detox_completed_title": "Detoks Tamamlandı!",
     "detox_completed_desc": "{{month}} ayındaki fotoğrafların tümü incelendi.",
     "delete_batch_cta": "{{count}} Fotoğrafı Sil & Alan Aç",
     "keep_all_cta": "Tümünü Sakla",
-    "back_to_months": "Aylara Dön"
+    "back_to_months": "Aylara Dön",
+    "empty_timeline_desc": "Galerinizde tarih bilgisi olan fotoğraf bulunamadı.",
+    "reviewed_of_total": "{{reviewed}} / {{total}} incelendi"
   },
   "vault": {
     "title": "Gizli Güvenli Kasa",
@@ -177,17 +209,19 @@
     "item_count": "{{count}} Öğe Kilitli",
     "restore_to_gallery": "Galeriye Geri Yükle",
     "delete_permanently": "Kalıcı Olarak Sil",
-    "lock_success": "Fotoğraf kasaya başarıyla kilitlendi.",
+    "lock_success": "{{count}} fotoğraf kasaya kilitlendi.",
     "restore_success": "Fotoğraf galeriye geri yüklendi.",
     "delete_confirm": "Bu fotoğraf kasadan kalıcı olarak silinecek. Onaylıyor musunuz?",
     "change_pin": "PIN Değiştir",
-    "lock_vault": "Kasayı Kilitle"
+    "lock_vault": "Kasayı Kilitle",
+    "lock_selected": "Seçilen {{count}} fotoğrafı kilitle",
+    "lock_failed": "Fotoğraflar kasaya kilitlenemedi.",
+    "picker_permission": "Fotoğraf seçebilmek için galeri izni gerekiyor.",
+    "picker_empty": "Galeride fotoğraf bulunamadı."
   },
   "report": {
     "title": "Temizlik Raporu",
     "cache_cleaner_title": "Önbellek Temizleyici",
-    "health_score": "%94 Mükemmel",
-    "health_label": "Depolama Sağlık Skoru",
     "total_saved": "Kazanılan Toplam Depolama",
     "total_saved_label": "Toplam Kazanılan",
     "photos_saved": "Resimler",
@@ -202,7 +236,13 @@
     "cat_photos": "Temizlenen Resimler",
     "cat_videos": "Sıkıştırılan Videolar",
     "cat_duplicates": "Silinen Tam Kopyalar",
-    "clean_stat_label": "Aylık Detoks Performansı"
+    "clean_stat_label": "Aylık Detoks Performansı",
+    "selected_total": "Seçilen: {{size}}",
+    "category_meta": "{{size}} • {{count}} dosya",
+    "clean_cache_btn_amount": "{{size}} Önbelleği Temizle",
+    "cache_already_clean": "Önbellek zaten temiz",
+    "cache_already_clean_desc": "Uygulama önbelleğinde silinecek geçici dosya bulunamadı.",
+    "nothing_to_clean": "Silinecek dosya bulunamadı."
   },
   "reviewer": {
     "reviewing": "İNCELENİYOR",
@@ -234,11 +274,13 @@
     "done_desc": "Tüm fotoğrafları başarıyla incelediniz.",
     "done_freed": "{{size}} alan temizlendi",
     "done_btn_home": "Ana Ekrana Dön",
-    "back_home": "Ana Ekrana Dön"
+    "back_home": "Ana Ekrana Dön",
+    "best_badge": "EN İYİ",
+    "title_default": "Fotoğraf İncelemesi"
   },
   "compressor": {
     "title": "Video Sıkıştırıcı",
-    "savings_badge": "4.2 GB'a Kadar Tasarruf",
+    "savings_badge": "{{size}} Tasarruf Potansiyeli",
     "potential_saving": "Potansiyel Tasarruf",
     "compress": "Sıkıştır",
     "compressing": "Sıkıştırılıyor...",
@@ -262,7 +304,14 @@
     "filter_500mb": "> 500 MB",
     "filter_100mb": "> 100 MB",
     "filter_50mb": "> 50 MB",
-    "no_videos_match": "Bu filtreye uygun video bulunamadı."
+    "no_videos_match": "Bu filtreye uygun video bulunamadı.",
+    "no_videos": "Video bulunamadı",
+    "no_videos_desc": "Galerinizde sıkıştırılabilecek video yok.",
+    "cancel": "İptal",
+    "copy_only": "Küçültülmüş kopya kaydedildi. Orijinali silmeyi onaylamadığınız için yerinde duruyor.",
+    "no_gain_title": "Zaten optimize",
+    "no_gain_photo": "Bu fotoğraf daha fazla küçültülemedi, bu yüzden orijinali olduğu gibi bırakıyoruz.",
+    "no_gain_video": "Bu video daha fazla küçültülemedi, bu yüzden orijinali olduğu gibi bırakıyoruz."
   },
   "permission": {
     "limited_alert_title": "Tam Galeri Erişimi Gerekli",
@@ -292,7 +341,7 @@
     "lang_tr": "Türkçe",
     "lang_en": "English",
     "fullscreen_mode": "Tam Ekran Görünüm",
-    "fullscreen_mode_desc": "Durum çubuğunu gizleyerek daha geniş bir görsel deneyim sunar.",
+    "fullscreen_mode_desc": "Durum çubuğunu ve tuşlu telefonlardaki alt sistem tuşlarını gizler. Kenardan kaydırınca geçici olarak görünür.",
     "deep_scan": "Derin AI Analizi",
     "deep_scan_desc": "Bulanık ve benzer fotoğrafları daha hassas analiz eder.",
     "section_storage": "Depolama ve Veriler",
@@ -300,11 +349,15 @@
     "reset_stats_confirm": "Tüm toplam tasarruf sayaçları sıfırlanacak. Onaylıyor musunuz?",
     "reset_stats_success": "İstatistikler sıfırlandı.",
     "section_about": "Hakkında",
-    "app_version": "Versiyon 1.0.4 (Build 5)",
+    "app_version": "Sürüm {{version}} (Build {{build}})",
     "app_tech": "FotoSil Neural Media Engine",
     "close": "Kapat",
     "cancel": "İptal",
-    "confirm": "Onayla"
+    "confirm": "Onayla",
+    "test_notification_hint": "Bildirimlerin cihazınıza ulaştığını doğrulamak için bu her zaman kullanılabilir; periyodik hatırlatıcıyı açmanız gerekmez.",
+    "test_notification_failed": "Test bildirimi gönderilemedi. Lütfen tekrar deneyin.",
+    "test_notification_blocked": "Bildirim izni reddedilmiş. Test bildirimi gönderebilmek için sistem ayarlarından izni açmanız gerekiyor.",
+    "open_os_settings": "Sistem Ayarlarını Aç"
   },
   "notifications": {
     "weekly_title": "🧹 Haftalık Galeri Detoksu Vakti!",
@@ -314,12 +367,42 @@
     "video_title": "🎬 4K Videolarınızı Optimize Edin",
     "video_body": "Ağır videoları kaliteden ödün vermeden sıkıştırarak gigabaytlarca yer kazanın!",
     "test_title": "✨ FotoSil Akıllı Hatırlatıcı Aktif",
-    "test_body": "Bildirimler başarıyla ayarlandı! Galeriniz dolduğunda size haber vereceğiz."
+    "test_body": "Bildirimler başarıyla ayarlandı! Galeriniz dolduğunda size haber vereceğiz.",
+    "channel_name": "Photocell Hatırlatıcıları"
   },
   "general": {
     "title": "Akıllı Galeri",
     "subtitle": "Depolama Analizi",
     "success": "Başarılı",
     "error": "Hata"
+  },
+  "onboarding": {
+    "next": "Devam",
+    "start": "Başla",
+    "grant": "İzinleri Ver",
+    "open_settings": "Ayarları Aç",
+    "continue_anyway": "Şimdilik atla",
+    "welcome_title": "Galerinizi birkaç dokunuşta hafifletin",
+    "welcome_subtitle": "Kopya, benzer ve bulanık fotoğrafları bulur; siz sadece tutar ya da silersiniz.",
+    "feature_scan_title": "Akıllı tarama",
+    "feature_scan_desc": "Kopya, benzer ve bulanık fotoğraflar otomatik bulunur.",
+    "feature_swipe_title": "Kaydırarak temizle",
+    "feature_swipe_desc": "Sağa kaydır: tut. Sola kaydır: sil.",
+    "feature_private_title": "Her şey cihazınızda",
+    "feature_private_desc": "Fotoğraflarınız asla internete yüklenmez.",
+    "permissions_title": "İki izne ihtiyacımız var",
+    "permissions_subtitle": "Uygulamanın çalışması için galeriye tam erişim şart.",
+    "gallery_title": "Galeriye tam erişim",
+    "gallery_desc": "Tüm fotoğraf ve videoları tarayabilmek için gerekli. “Seçili fotoğraflara izin ver” (kısıtlı erişim) seçilirse temizleme çalışmaz.",
+    "notif_title": "Bildirimler",
+    "notif_desc": "Düzenli temizlik hatırlatmaları için. Zorunlu değil ama önerilir.",
+    "required": "ZORUNLU",
+    "recommended": "ÖNERİLİR",
+    "status_granted": "Verildi",
+    "status_limited": "Kısıtlı: çalışmaz",
+    "status_denied": "Verilmedi",
+    "status_blocked": "Reddedildi",
+    "limited_help": "Kısıtlı erişim seçildi. Ayarlar’da fotoğraf iznini “Tümüne izin ver” olarak değiştirin.",
+    "blocked_help": "İzin reddedildi. Devam etmek için Ayarlar’dan galeri iznini açın."
   }
 }

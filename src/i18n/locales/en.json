@@ -27,7 +27,10 @@
       "scan_step_blurry": "Analyzing Sharpness & Blurry Photos ({{current}}/{{total}})...",
       "scan_step_sizes": "Calculating Recoverable Storage & Sizes...",
       "scan_items_count": "{{scanned}} / {{total}} Photos Analyzed",
-      "scan_estimated_time": "Approx. {{seconds}}s remaining"
+      "scan_estimated_time": "Approx. {{seconds}}s remaining",
+      "scan_failed": "The scan could not finish",
+      "retry": "Try Again",
+      "background_scanning": "Scanning in the background: {{scanned}} / {{total}}"
     }
   },
   "nav": {
@@ -70,7 +73,8 @@
     "video_comp_title": "Video Compressor",
     "video_comp_desc": "Compress large 4K and 1080P videos with hardware acceleration.",
     "contacts_title": "Contacts Cleaner",
-    "contacts_desc": "Clean duplicate phone numbers and empty contacts with one tap."
+    "contacts_desc": "Clean duplicate phone numbers and empty contacts with one tap.",
+    "badge": "ALL-IN-ONE SUITE"
   },
   "contacts_cleaner": {
     "title": "Contacts Cleaner",
@@ -86,7 +90,14 @@
     "filter_empty": "Empty Records",
     "permission_title": "Contacts Access Required",
     "permission_desc": "Please grant contacts permission so PhotoCell can identify duplicate phone numbers and empty contacts.",
-    "grant_permission": "Grant Contacts Permission"
+    "grant_permission": "Grant Contacts Permission",
+    "all_contacts_clean_desc": "No duplicate numbers or empty entries were found.",
+    "matched_with": "Matches: {{name}}",
+    "unnamed_contact": "Unnamed contact",
+    "no_number": "No number",
+    "delete_confirm_title": "Delete Selected Contacts?",
+    "delete_confirm_desc": "{{count}} contacts will be permanently removed from your address book.",
+    "delete_failed": "Could not delete the contacts. Please check contacts permissions."
   },
   "guide": {
     "title": "PhotoCell User Guide",
@@ -98,17 +109,23 @@
     "step3_title": "3. Media & Privacy Tools",
     "step3_desc": "Save up to 80% space with photo/video compressor and strip GPS location with EXIF cleaner.",
     "got_it": "Got It, Let's Start!",
-    "open_guide": "User Guide & Tips"
+    "open_guide": "User Guide & Tips",
+    "next_step": "Next"
   },
   "storage_widget": {
     "title": "Storage Health & Memory",
-    "health_score": "98% HEALTHY",
     "turbo_clean": "Boost RAM & Storage",
-    "turbo_success": "Temporary system cache and memory flushed successfully!",
+    "turbo_success": "Temporary files cleared, {{size}} reclaimed!",
     "photos_label": "Photos",
     "videos_label": "Videos",
     "system_label": "System/Cache",
-    "free_label": "Free Space"
+    "free_label": "Free Space",
+    "measuring": "Measuring storage...",
+    "capacity_line": "{{used}} of {{total}} used",
+    "free_percent": "{{percent}}% FREE",
+    "estimate_note": "Media sizes are estimated from a sample.",
+    "turbo_freed": "{{size}} freed",
+    "turbo_already_clean": "No temporary files left to clear."
   },
   "photo_compressor": {
     "title": "Photo Compressor",
@@ -124,7 +141,8 @@
     "save_copy": "Save as New Copy Only",
     "success_replaced": "Original photo replaced with compressed version!",
     "success_saved": "Compressed photo saved to gallery as new file!",
-    "no_photos": "No photos found to compress."
+    "no_photos": "No photos found to compress.",
+    "no_photos_desc": "No photos large enough to be worth compressing."
   },
   "exif_cleaner": {
     "title": "EXIF & GPS Privacy Cleaner",
@@ -133,7 +151,13 @@
     "clean_and_save": "Strip Metadata & Save",
     "clean_success": "Location and camera metadata stripped completely. Safe to share!",
     "clean_badge": "100% PRIVATE & SAFE",
-    "info_text": "Smartphone cameras embed exact latitude/longitude GPS coordinates of your home or location into photos. This tool removes that sensitive data."
+    "info_text": "Smartphone cameras embed exact latitude/longitude GPS coordinates of your home or location into photos. This tool removes that sensitive data.",
+    "clean_action": "Clean",
+    "cleaned_badge": "CLEANED",
+    "clean_failed": "Could not clear the metadata. Please check gallery permissions.",
+    "clean_copy_only": "A clean copy was saved, but the original still contains your location because you did not confirm deleting it. Delete the original before sharing.",
+    "no_photos": "No photos carry location data",
+    "no_photos_desc": "The scanned photos contain no GPS or device information."
   },
   "heavy_media": {
     "title": "Heavy Media Radar",
@@ -143,7 +167,13 @@
     "filter_50mb": "> 50 MB",
     "filter_25mb": "> 25 MB",
     "delete_selected": "Delete {{count}} Selected Files ({{size}})",
-    "no_heavy_files": "No heavy media files found for selected filter."
+    "no_heavy_files": "No heavy media files found for selected filter.",
+    "no_heavy_files_desc": "Nothing above the selected threshold. Try a lower filter.",
+    "permission_title": "Gallery Access Required",
+    "permission_desc": "Grant gallery access so file sizes can be read.",
+    "delete_confirm_title": "Delete Selected Files?",
+    "delete_confirm_desc": "{{count}} files will be permanently deleted, freeing {{size}}.",
+    "delete_failed": "Could not delete the files. Please check gallery permissions."
   },
   "timeline": {
     "title": "Timeline Detox",
@@ -154,13 +184,15 @@
     "clean_month_cta": "Clean This Month",
     "reviewed_badge": "Completed",
     "swipe_hint": "👈 Swipe Left: Trash | Swipe Right: Keep 👉",
-    "month_summary": "{{count}} Photos • {{size}}",
+    "month_summary": "{{count}} photos • {{size}}",
     "empty_timeline": "No photos found to review yet.",
     "detox_completed_title": "Detox Completed!",
     "detox_completed_desc": "All photos for {{month}} have been reviewed.",
     "delete_batch_cta": "Delete {{count}} Photos & Reclaim Space",
     "keep_all_cta": "Keep All",
-    "back_to_months": "Back to Months"
+    "back_to_months": "Back to Months",
+    "empty_timeline_desc": "No dated photos were found in your gallery.",
+    "reviewed_of_total": "{{reviewed}} / {{total}} reviewed"
   },
   "vault": {
     "title": "Secure Private Vault",
@@ -177,17 +209,19 @@
     "item_count": "{{count}} Items Locked",
     "restore_to_gallery": "Restore to Gallery",
     "delete_permanently": "Delete Permanently",
-    "lock_success": "Photo safely locked into vault.",
+    "lock_success": "{{count}} photos locked into the vault.",
     "restore_success": "Photo restored to device gallery.",
     "delete_confirm": "This photo will be permanently deleted from vault. Are you sure?",
     "change_pin": "Change PIN",
-    "lock_vault": "Lock Vault"
+    "lock_vault": "Lock Vault",
+    "lock_selected": "Lock {{count}} selected photos",
+    "lock_failed": "Could not lock the photos into the vault.",
+    "picker_permission": "Gallery access is required to pick photos.",
+    "picker_empty": "No photos found in the gallery."
   },
   "report": {
     "title": "Clean Report",
     "cache_cleaner_title": "Cache Cleaner",
-    "health_score": "94% Excellent",
-    "health_label": "Storage Health Score",
     "total_saved": "Total Recovered Storage",
     "total_saved_label": "Total Saved",
     "photos_saved": "Photos",
@@ -202,7 +236,13 @@
     "cat_photos": "Cleaned Photos",
     "cat_videos": "Compressed Videos",
     "cat_duplicates": "Deleted Duplicates",
-    "clean_stat_label": "Monthly Detox Performance"
+    "clean_stat_label": "Monthly Detox Performance",
+    "selected_total": "Selected: {{size}}",
+    "category_meta": "{{size}} • {{count}} files",
+    "clean_cache_btn_amount": "Clear {{size}} of Cache",
+    "cache_already_clean": "Cache is already clean",
+    "cache_already_clean_desc": "No temporary files were found in the app cache.",
+    "nothing_to_clean": "There was nothing left to delete."
   },
   "reviewer": {
     "reviewing": "REVIEWING",
@@ -234,11 +274,13 @@
     "done_desc": "You have reviewed all photos successfully.",
     "done_freed": "{{size}} storage freed",
     "done_btn_home": "Back to Home",
-    "back_home": "Back to Home"
+    "back_home": "Back to Home",
+    "best_badge": "BEST",
+    "title_default": "Photo Review"
   },
   "compressor": {
     "title": "Video Optimizer",
-    "savings_badge": "Save up to 4.2 GB",
+    "savings_badge": "Up to {{size}} to reclaim",
     "potential_saving": "Potential Saving",
     "compress": "Compress",
     "compressing": "Compressing...",
@@ -262,7 +304,14 @@
     "filter_500mb": "> 500 MB",
     "filter_100mb": "> 100 MB",
     "filter_50mb": "> 50 MB",
-    "no_videos_match": "No videos match this filter."
+    "no_videos_match": "No videos match this filter.",
+    "no_videos": "No videos found",
+    "no_videos_desc": "There are no videos in your gallery to compress.",
+    "cancel": "Cancel",
+    "copy_only": "The smaller copy was saved. The original was kept because you did not confirm deleting it.",
+    "no_gain_title": "Already optimized",
+    "no_gain_photo": "This photo could not be made any smaller, so the original is left as it is.",
+    "no_gain_video": "This video could not be made any smaller, so the original is left as it is."
   },
   "permission": {
     "limited_alert_title": "Full Gallery Access Required",
@@ -292,7 +341,7 @@
     "lang_tr": "Türkçe",
     "lang_en": "English",
     "fullscreen_mode": "Fullscreen Mode",
-    "fullscreen_mode_desc": "Hides the status bar to provide an expansive visual experience.",
+    "fullscreen_mode_desc": "Hides the status bar and the bottom system buttons on phones that have them. Swipe from the edge to reveal them briefly.",
     "deep_scan": "Deep AI Analysis",
     "deep_scan_desc": "Higher precision for blurry and similar photo detection.",
     "section_storage": "Storage & Data",
@@ -300,11 +349,15 @@
     "reset_stats_confirm": "All total saved counters will be reset. Are you sure?",
     "reset_stats_success": "Stats reset successfully.",
     "section_about": "About",
-    "app_version": "Version 1.0.4 (Build 5)",
+    "app_version": "Version {{version}} (Build {{build}})",
     "app_tech": "PhotoCell Neural Media Engine",
     "close": "Close",
     "cancel": "Cancel",
-    "confirm": "Confirm"
+    "confirm": "Confirm",
+    "test_notification_hint": "Always available to confirm notifications reach your device — you don’t need to turn on the periodic reminder first.",
+    "test_notification_failed": "Could not send the test notification. Please try again.",
+    "test_notification_blocked": "Notification permission was denied. Enable it in the system settings to send a test notification.",
+    "open_os_settings": "Open System Settings"
   },
   "notifications": {
     "weekly_title": "🧹 Time for a Quick Gallery Detox!",
@@ -314,12 +367,42 @@
     "video_title": "🎬 Optimize Heavy 4K Videos",
     "video_body": "Compress large videos without losing quality and save gigabytes!",
     "test_title": "✨ PhotoCell Smart Reminder Active",
-    "test_body": "Reminders configured successfully! We will notify you when it's time for a detox."
+    "test_body": "Reminders configured successfully! We will notify you when it's time for a detox.",
+    "channel_name": "Photocell Reminders"
   },
   "general": {
     "title": "Smart Gallery",
     "subtitle": "Storage Analysis",
     "success": "Success",
     "error": "Error"
+  },
+  "onboarding": {
+    "next": "Continue",
+    "start": "Get started",
+    "grant": "Grant permissions",
+    "open_settings": "Open settings",
+    "continue_anyway": "Skip for now",
+    "welcome_title": "Lighten your gallery in a few taps",
+    "welcome_subtitle": "Finds duplicate, similar and blurry photos. You just keep or delete.",
+    "feature_scan_title": "Smart scan",
+    "feature_scan_desc": "Duplicate, similar and blurry photos are found automatically.",
+    "feature_swipe_title": "Swipe to clean",
+    "feature_swipe_desc": "Swipe right to keep. Swipe left to delete.",
+    "feature_private_title": "Everything stays on your device",
+    "feature_private_desc": "Your photos are never uploaded to the internet.",
+    "permissions_title": "We need two permissions",
+    "permissions_subtitle": "Full gallery access is required for the app to work.",
+    "gallery_title": "Full gallery access",
+    "gallery_desc": "Needed to scan all your photos and videos. If you choose “Select photos” (limited access), cleaning will not work.",
+    "notif_title": "Notifications",
+    "notif_desc": "For regular cleanup reminders. Optional, but recommended.",
+    "required": "REQUIRED",
+    "recommended": "RECOMMENDED",
+    "status_granted": "Granted",
+    "status_limited": "Limited: won’t work",
+    "status_denied": "Not granted",
+    "status_blocked": "Denied",
+    "limited_help": "Limited access was selected. In Settings, change the photo permission to “Allow all”.",
+    "blocked_help": "Permission was denied. Turn on gallery access in Settings to continue."
   }
 }

@@ -1,7 +1,14 @@
-import React, { useEffect } from 'react';
+import React, { useMemo } from 'react';
 import { View, Text, StyleSheet } from 'react-native';
-import { Canvas, SweepGradient, Circle, Blur, BackdropFilter, Fill, vec } from '@shopify/react-native-skia';
-import Animated, { useSharedValue, useAnimatedStyle, withRepeat, withTiming, Easing, withSequence } from 'react-native-reanimated';
+import {
+  Canvas,
+  SweepGradient,
+  Circle,
+  Path,
+  Group,
+  Skia,
+  vec,
+} from '@shopify/react-native-skia';
 import { LinearGradient } from 'expo-linear-gradient';
 import { colors } from '../../theme/colors';
 
@@ -10,6 +17,12 @@ interface CircularGaugeProps {
   unit: string;
   size?: number;
   strokeWidth?: number;
+  /**
+   * How much of the ring to fill, 0-1. Defaults to a full ring for gauges that
+   * display a value rather than progress. Before this existed the ring was
+   * always complete, so the scan screen looked frozen at 100%.
+   */
+  progress?: number;
 }
 
 export const CircularGauge: React.FC<CircularGaugeProps> = ({
@@ -17,75 +30,61 @@ export const CircularGauge: React.FC<CircularGaugeProps> = ({
   unit,
   size = 220,
   strokeWidth = 14,
+  progress = 1,
 }) => {
   const center = size / 2;
   const radius = center - strokeWidth / 2 - 8;
+  const clampedProgress = Math.max(0, Math.min(1, progress));
 
-  const pulseScale = useSharedValue(1);
-
-  useEffect(() => {
-    pulseScale.value = withRepeat(
-      withSequence(
-        withTiming(1.03, { duration: 2500, easing: Easing.inOut(Easing.ease) }),
-        withTiming(0.97, { duration: 2500, easing: Easing.inOut(Easing.ease) })
-      ),
-      -1,
-      true
-    );
-  }, []);
-
-  const animatedHubStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: pulseScale.value }],
-  }));
+  const ringPath = useMemo(() => Skia.Path.Circle(center, center, radius), [center, radius]);
 
   return (
-    <View style={[styles.container, { width: size, height: size, borderRadius: size / 2 }]}>
-      {/* Background Skia Light Glass Circle */}
+    <View style={[styles.container, { width: size, height: size, borderRadius: center }]}>
       <Canvas style={StyleSheet.absoluteFill}>
-        <BackdropFilter filter={<Blur blur={25} />} clip={{ x: 0, y: 0, width: size, height: size }}>
-          <Fill color={colors.surfaceCard} />
-        </BackdropFilter>
-
-        {/* Track Ring */}
+        {/* Track */}
         <Circle
           cx={center}
           cy={center}
           r={radius}
           style="stroke"
           strokeWidth={strokeWidth}
-          color="rgba(226, 232, 240, 0.8)"
+          color={colors.surfaceSunken}
         />
 
-        {/* Glowing Gradient Sweep Arc Ring */}
-        <Circle
-          cx={center}
-          cy={center}
-          r={radius}
-          style="stroke"
-          strokeWidth={strokeWidth}
-        >
-          <SweepGradient
-            c={vec(center, center)}
-            colors={[colors.neonCyan, colors.electricPurple, colors.successMint, colors.neonCyan]}
+        {/* Filled arc, rotated so it starts at twelve o'clock */}
+        <Group transform={[{ rotate: -Math.PI / 2 }]} origin={vec(center, center)}>
+          <Path
+            path={ringPath}
+            style="stroke"
+            strokeWidth={strokeWidth}
+            strokeCap="round"
             start={0}
-            end={360}
-          />
-        </Circle>
+            end={clampedProgress}
+          >
+            <SweepGradient
+              c={vec(center, center)}
+              colors={[colors.primary, colors.accent, colors.primarySoft, colors.primary]}
+              start={0}
+              end={360}
+            />
+          </Path>
+        </Group>
       </Canvas>
 
-      {/* Top Specular Sheen Line */}
       <LinearGradient
         colors={['rgba(255, 255, 255, 0.9)', 'transparent']}
         style={styles.topSheen}
         start={{ x: 0.5, y: 0 }}
         end={{ x: 0.5, y: 1 }}
+        pointerEvents="none"
       />
 
-      {/* Inner Numerical Display with Breathing Hub */}
-      <Animated.View style={[styles.innerContent, animatedHubStyle]}>
-        <Text style={styles.valueText}>{value}</Text>
+      <View style={styles.innerContent}>
+        <Text style={[styles.valueText, { fontSize: size * 0.2 }]} numberOfLines={1}>
+          {value}
+        </Text>
         <Text style={styles.unitText}>{unit}</Text>
-      </Animated.View>
+      </View>
     </View>
   );
 };
@@ -95,12 +94,12 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     overflow: 'hidden',
-    borderWidth: 1.2,
-    borderColor: colors.whiteBorder,
+    borderWidth: 1,
+    borderColor: colors.border,
     backgroundColor: colors.surfaceCard,
     shadowColor: '#0F172A',
     shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.08,
+    shadowOpacity: 0.07,
     shadowRadius: 20,
     elevation: 6,
   },
@@ -115,18 +114,18 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 10,
+    paddingHorizontal: 12,
   },
   valueText: {
-    fontSize: 44,
     fontWeight: '900',
     color: colors.textPrimary,
     letterSpacing: -1.5,
   },
   unitText: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '900',
-    color: colors.neonCyan,
+    color: colors.primary,
     marginTop: 2,
-    letterSpacing: 2.5,
+    letterSpacing: 2.2,
   },
 });

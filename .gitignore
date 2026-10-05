@@ -42,3 +42,5 @@ yarn-error.*
 *.jks
 *.keystore
 android/key.properties
+# Local release signing secrets (see plugins/withAndroidRelease.js)
+keystore.properties

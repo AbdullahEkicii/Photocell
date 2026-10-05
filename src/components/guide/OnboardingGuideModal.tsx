@@ -23,8 +23,7 @@ import {
 import * as Haptics from 'expo-haptics';
 
 import { GlassPanel } from '../glass/GlassPanel';
-import { GlassButton } from '../glass/GlassButton';
-import { colors } from '../../theme/colors';
+import { colors, alpha, radius } from '../../theme/colors';
 
 const { width } = Dimensions.get('window');
 
@@ -40,17 +39,17 @@ export const OnboardingGuideModal: React.FC<Props> = ({ visible, onClose }) => {
   const steps = [
     {
       icon: Images,
-      iconColor: colors.neonCyan,
+      iconColor: colors.primary,
       titleKey: 'guide.step1_title',
       descKey: 'guide.step1_desc',
-      accentColor: colors.neonCyan,
+      accentColor: colors.primary,
     },
     {
       icon: Calendar,
-      iconColor: colors.electricPurple,
+      iconColor: colors.accent,
       titleKey: 'guide.step2_title',
       descKey: 'guide.step2_desc',
-      accentColor: colors.electricPurple,
+      accentColor: colors.accent,
     },
     {
       icon: Layers,
@@ -90,7 +89,8 @@ export const OnboardingGuideModal: React.FC<Props> = ({ visible, onClose }) => {
       <View style={styles.modalOverlay}>
         <GlassPanel
           borderRadius={32}
-          borderColor={`${currentStepData.accentColor}40`}
+          borderColor={alpha(currentStepData.accentColor, 0.28)}
+          fillColor={colors.surface}
           style={styles.modalCard}
           contentStyle={styles.modalContent}
           intensity={45}
@@ -144,7 +144,10 @@ export const OnboardingGuideModal: React.FC<Props> = ({ visible, onClose }) => {
               style={styles.nextBtn}
             >
               <LinearGradient
-                colors={[`${currentStepData.accentColor}EE`, `${currentStepData.accentColor}AA`]}
+                colors={[
+                  currentStepData.accentColor,
+                  alpha(currentStepData.accentColor, 0.82),
+                ]}
                 style={styles.nextBtnGradient}
                 start={{ x: 0, y: 0 }}
                 end={{ x: 1, y: 0 }}
@@ -152,7 +155,7 @@ export const OnboardingGuideModal: React.FC<Props> = ({ visible, onClose }) => {
                 <Text style={styles.nextBtnText}>
                   {currentStep === steps.length - 1
                     ? t('guide.got_it')
-                    : t('reviewer.next_group', 'İlerle')}
+                    : t('guide.next_step')}
                 </Text>
                 <ChevronRight color="#FFF" size={16} strokeWidth={2.5} style={{ marginLeft: 4 }} />
               </LinearGradient>
@@ -167,7 +170,7 @@ export const OnboardingGuideModal: React.FC<Props> = ({ visible, onClose }) => {
 const styles = StyleSheet.create({
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.85)',
+    backgroundColor: colors.scrim,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 24,
@@ -188,7 +191,7 @@ const styles = StyleSheet.create({
     width: 32,
     height: 32,
     borderRadius: 16,
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: colors.surfaceSunken,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -229,7 +232,7 @@ const styles = StyleSheet.create({
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
+    backgroundColor: colors.borderStrong,
   },
   dotActive: {
     width: 24,
@@ -245,9 +248,9 @@ const styles = StyleSheet.create({
     width: 44,
     height: 44,
     borderRadius: 22,
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: colors.surface,
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
+    borderColor: colors.border,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -255,7 +258,7 @@ const styles = StyleSheet.create({
     flex: 1,
     marginLeft: 12,
     height: 48,
-    borderRadius: 24,
+    borderRadius: radius.card,
     overflow: 'hidden',
   },
   nextBtnGradient: {

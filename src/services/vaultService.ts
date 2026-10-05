@@ -1,6 +1,7 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import * as MediaLibrary from 'expo-media-library/legacy';
 import { formatByteSize } from './cacheCleaner';
+import { deleteMediaAssets } from './mediaScanner';
 
 export interface VaultItem {
   id: string;
@@ -136,7 +137,7 @@ export async function lockPhotoToVault(sourceUri: string, originalAssetId?: stri
     // Optionally delete from public gallery if assetId provided
     if (originalAssetId) {
       try {
-        await MediaLibrary.deleteAssetsAsync([originalAssetId]);
+        await deleteMediaAssets([originalAssetId]);
       } catch {}
     }
 

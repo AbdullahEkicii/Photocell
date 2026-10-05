@@ -36,7 +36,8 @@ import { FlashList } from '@shopify/flash-list';
 import { AtmosphericBackground } from '../components/glass/AtmosphericBackground';
 import { GlassPanel } from '../components/glass/GlassPanel';
 import { GlassButton } from '../components/glass/GlassButton';
-import { colors } from '../theme/colors';
+import { ScreenHeader } from '../components/layout/ScreenHeader';
+import { colors, alpha } from '../theme/colors';
 import {
   hasVaultPin,
   verifyVaultPin,
@@ -77,6 +78,7 @@ export const VaultScreen: React.FC = () => {
   const [pickerLoading, setPickerLoading] = useState<boolean>(false);
   const [selectedPickerIds, setSelectedPickerIds] = useState<Set<string>>(new Set());
   const [lockingBatch, setLockingBatch] = useState<boolean>(false);
+  const [pickerPermissionDenied, setPickerPermissionDenied] = useState<boolean>(false);
 
   const checkPinStatus = useCallback(async () => {
     try {
@@ -167,8 +169,10 @@ export const VaultScreen: React.FC = () => {
       const { status } = await MediaLibrary.requestPermissionsAsync(false, ['photo']);
       if (status !== 'granted') {
         setPickerLoading(false);
+        setPickerPermissionDenied(true);
         return;
       }
+      setPickerPermissionDenied(false);
 
       const page = await MediaLibrary.getAssetsAsync({
         first: 80,
@@ -207,17 +211,26 @@ export const VaultScreen: React.FC = () => {
 
     try {
       const chosenPhotos = galleryPhotos.filter((p) => selectedPickerIds.has(p.id));
+      let locked = 0;
       for (const p of chosenPhotos) {
-        await lockPhotoToVault(p.uri, p.id);
+        const ok = await lockPhotoToVault(p.uri, p.id);
+        if (ok) locked += 1;
+      }
+
+      if (locked === 0) {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
+        Alert.alert(t('general.error'), t('vault.lock_failed'));
+        return;
       }
 
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-      Alert.alert(t('general.success'), t('vault.lock_success'));
+      Alert.alert(t('general.success'), t('vault.lock_success', { count: locked }));
       setPickerVisible(false);
       setSelectedPickerIds(new Set());
       await loadItems();
     } catch (err) {
       console.warn('Error locking chosen photos:', err);
+      Alert.alert(t('general.error'), t('vault.lock_failed'));
     } finally {
       setLockingBatch(false);
     }
@@ -267,31 +280,29 @@ export const VaultScreen: React.FC = () => {
       <AtmosphericBackground />
 
       <SafeAreaView style={styles.safeArea} edges={['top']}>
-        {/* Top Header Bar */}
-        <Animated.View entering={FadeInDown.duration(400)} style={styles.headerBar}>
-          <View style={styles.headerLeftGroup}>
-            <ShieldCheck color={colors.successMint} size={24} strokeWidth={2.4} />
-            <Text style={styles.appTitle}>{t('vault.title')}</Text>
-          </View>
-
-          {isUnlocked && (
-            <TouchableOpacity
-              activeOpacity={0.8}
-              onPress={handleLockVault}
-              style={styles.lockButton}
-            >
-              <Lock color={colors.dangerRose} size={16} strokeWidth={2.4} />
-              <Text style={styles.lockButtonText}>{t('vault.lock_vault')}</Text>
-            </TouchableOpacity>
-          )}
-        </Animated.View>
+        <ScreenHeader
+          title={t('dashboard.app_title')}
+          brand
+          rightSlot={
+            isUnlocked ? (
+              <TouchableOpacity
+                activeOpacity={0.8}
+                onPress={handleLockVault}
+                style={styles.lockButton}
+              >
+                <Lock color={colors.dangerRose} size={16} strokeWidth={2.4} />
+                <Text style={styles.lockButtonText}>{t('vault.lock_vault')}</Text>
+              </TouchableOpacity>
+            ) : undefined
+          }
+        />
 
         {!isUnlocked ? (
           /* PIN KEYPAD SCREEN */
           <Animated.View entering={FadeIn.duration(300)} style={styles.pinContainer}>
             <View style={styles.pinHeader}>
               <View style={styles.lockBadge}>
-                <Lock color={colors.neonCyan} size={32} strokeWidth={2.4} />
+                <Lock color={colors.primary} size={30} strokeWidth={2.2} />
               </View>
               <Text style={styles.pinTitle}>
                 {pinStep === 'create'
@@ -364,7 +375,7 @@ export const VaultScreen: React.FC = () => {
                 onPress={handleOpenPicker}
                 style={styles.addPhotoButton}
               >
-                <Plus color={colors.neonCyan} size={18} style={{ marginRight: 6 }} />
+                <Plus color={colors.primary} size={17} style={{ marginRight: 6 }} />
                 <Text style={styles.addPhotoText}>{t('vault.add_media')}</Text>
               </TouchableOpacity>
             </Animated.View>
@@ -377,7 +388,7 @@ export const VaultScreen: React.FC = () => {
                   <Text style={styles.emptySub}>{t('vault.empty_vault_sub')}</Text>
                   <GlassButton
                     borderRadius={20}
-                    borderColor={colors.neonCyan}
+                    borderColor={alpha(colors.primary, 0.45)}
                     style={styles.emptyAddBtn}
                     onPress={handleOpenPicker}
                   >
@@ -400,7 +411,7 @@ export const VaultScreen: React.FC = () => {
                     onPress={() => setSelectedItem(item)}
                     style={styles.gridItem}
                   >
-                    <Image source={{ uri: item.uri }} style={styles.gridImage} resizeMode="cover" />
+                    <Image source={{ uri: item.uri }} style={styles.gridImage} resizeMethod="resize" resizeMode="cover" />
                     <LinearGradient
                       colors={['transparent', 'rgba(15, 23, 42, 0.75)']}
                       style={StyleSheet.absoluteFill}
@@ -429,8 +440,16 @@ export const VaultScreen: React.FC = () => {
 
               {pickerLoading ? (
                 <View style={styles.pickerLoadingBox}>
-                  <ActivityIndicator size="large" color={colors.neonCyan} />
+                  <ActivityIndicator size="large" color={colors.primary} />
                   <Text style={styles.pickerLoadingText}>{t('dashboard.status.scanning')}</Text>
+                </View>
+              ) : pickerPermissionDenied ? (
+                <View style={styles.pickerLoadingBox}>
+                  <Text style={styles.pickerLoadingText}>{t('vault.picker_permission')}</Text>
+                </View>
+              ) : galleryPhotos.length === 0 ? (
+                <View style={styles.pickerLoadingBox}>
+                  <Text style={styles.pickerLoadingText}>{t('vault.picker_empty')}</Text>
                 </View>
               ) : (
                 <View style={{ flex: 1 }}>
@@ -447,7 +466,7 @@ export const VaultScreen: React.FC = () => {
                           onPress={() => togglePickerSelect(item.id)}
                           style={styles.pickerGridItem}
                         >
-                          <Image source={{ uri: item.uri }} style={styles.pickerGridImage} resizeMode="cover" />
+                          <Image source={{ uri: item.uri }} style={styles.pickerGridImage} resizeMethod="resize" resizeMode="cover" />
                           <View style={[styles.pickerCheckbox, isSelected && styles.pickerCheckboxActive]}>
                             {isSelected && <Check color="#FFF" size={14} strokeWidth={3} />}
                           </View>
@@ -465,14 +484,14 @@ export const VaultScreen: React.FC = () => {
                         onPress={handleConfirmLockPhotos}
                         style={styles.confirmLockButton}
                       >
-                        <LinearGradient colors={['#9333EA', '#7E22CE']} style={styles.confirmLockGradient}>
+                        <LinearGradient colors={colors.primaryGradient} style={styles.confirmLockGradient}>
                           {lockingBatch ? (
                             <ActivityIndicator color="#FFF" size="small" style={{ marginRight: 8 }} />
                           ) : (
                             <Lock color="#FFF" size={18} style={{ marginRight: 8 }} />
                           )}
                           <Text style={styles.confirmLockText}>
-                            {`Seçilen ${selectedPickerIds.size} Fotoğrafı Kasaya Kilitle`}
+                            {t('vault.lock_selected', { count: selectedPickerIds.size })}
                           </Text>
                         </LinearGradient>
                       </TouchableOpacity>
@@ -498,7 +517,7 @@ export const VaultScreen: React.FC = () => {
                 </View>
 
                 <View style={styles.previewImageContainer}>
-                  <Image source={{ uri: selectedItem.uri }} style={styles.previewFullImage} resizeMode="contain" />
+                  <Image source={{ uri: selectedItem.uri }} style={styles.previewFullImage} resizeMethod="resize" resizeMode="contain" />
                 </View>
 
                 <View style={styles.previewActionsRow}>
@@ -508,7 +527,7 @@ export const VaultScreen: React.FC = () => {
                     onPress={() => handleRestorePhoto(selectedItem)}
                     style={styles.restoreBtn}
                   >
-                    <Undo2 color={colors.neonCyan} size={18} style={{ marginRight: 8 }} />
+                    <Undo2 color={colors.primarySoft} size={18} style={{ marginRight: 8 }} />
                     <Text style={styles.restoreBtnText}>{t('vault.restore_to_gallery')}</Text>
                   </TouchableOpacity>
 
@@ -518,7 +537,7 @@ export const VaultScreen: React.FC = () => {
                     onPress={() => handleDeletePhoto(selectedItem)}
                     style={styles.deleteBtn}
                   >
-                    <Trash2 color={colors.dangerRose} size={18} style={{ marginRight: 8 }} />
+                    <Trash2 color={colors.dangerLight} size={18} style={{ marginRight: 8 }} />
                     <Text style={styles.deleteBtnText}>{t('vault.delete_permanently')}</Text>
                   </TouchableOpacity>
                 </View>
@@ -534,37 +553,18 @@ export const VaultScreen: React.FC = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: colors.oledBlack,
+    backgroundColor: colors.canvas,
   },
   safeArea: {
     flex: 1,
-  },
-  headerBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(226, 232, 240, 0.9)',
-  },
-  headerLeftGroup: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  appTitle: {
-    fontSize: 20,
-    fontWeight: '900',
-    color: colors.textPrimary,
   },
   lockButton: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    backgroundColor: 'rgba(244, 63, 94, 0.08)',
+    backgroundColor: alpha(colors.dangerRose, 0.08),
     borderWidth: 1,
-    borderColor: 'rgba(244, 63, 94, 0.3)',
+    borderColor: alpha(colors.dangerRose, 0.3),
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 14,
@@ -589,9 +589,9 @@ const styles = StyleSheet.create({
     width: 68,
     height: 68,
     borderRadius: 34,
-    backgroundColor: 'rgba(147, 51, 234, 0.12)',
+    backgroundColor: alpha(colors.primary, 0.1),
     borderWidth: 1.5,
-    borderColor: 'rgba(147, 51, 234, 0.35)',
+    borderColor: alpha(colors.primary, 0.3),
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 16,
@@ -618,12 +618,12 @@ const styles = StyleSheet.create({
     height: 18,
     borderRadius: 9,
     borderWidth: 2,
-    borderColor: '#CBD5E1',
-    backgroundColor: '#FFFFFF',
+    borderColor: colors.borderStrong,
+    backgroundColor: colors.surface,
   },
   pinDotFilled: {
-    backgroundColor: colors.neonCyan,
-    borderColor: colors.neonCyan,
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
   },
   keypadGrid: {
     flexDirection: 'row',
@@ -636,9 +636,9 @@ const styles = StyleSheet.create({
     width: 76,
     height: 76,
     borderRadius: 38,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: colors.surface,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
+    borderColor: colors.border,
     alignItems: 'center',
     justifyContent: 'center',
     shadowColor: '#0F172A',
@@ -677,15 +677,15 @@ const styles = StyleSheet.create({
   addPhotoButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(147, 51, 234, 0.12)',
+    backgroundColor: alpha(colors.primary, 0.1),
     borderWidth: 1,
-    borderColor: 'rgba(147, 51, 234, 0.4)',
+    borderColor: alpha(colors.primary, 0.32),
     paddingHorizontal: 14,
     paddingVertical: 8,
     borderRadius: 16,
   },
   addPhotoText: {
-    color: colors.neonCyan,
+    color: colors.primary,
     fontSize: 13,
     fontWeight: '800',
   },
@@ -750,13 +750,13 @@ const styles = StyleSheet.create({
     height: 44,
   },
   emptyAddBtnText: {
-    color: colors.neonCyan,
+    color: colors.primary,
     fontSize: 14,
     fontWeight: '800',
   },
   pickerModalOverlay: {
     flex: 1,
-    backgroundColor: '#F8FAFC',
+    backgroundColor: colors.canvas,
   },
   pickerSafeArea: {
     flex: 1,
@@ -768,15 +768,15 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     paddingVertical: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#E2E8F0',
+    borderBottomColor: colors.border,
   },
   pickerCloseBtn: {
     width: 38,
     height: 38,
     borderRadius: 19,
-    backgroundColor: '#FFFFFF',
+    backgroundColor: colors.surface,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
+    borderColor: colors.border,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -828,8 +828,8 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   pickerCheckboxActive: {
-    backgroundColor: colors.neonCyan,
-    borderColor: colors.neonCyan,
+    backgroundColor: colors.primary,
+    borderColor: colors.primary,
   },
   pickerFloatingBar: {
     position: 'absolute',
@@ -841,9 +841,9 @@ const styles = StyleSheet.create({
     height: 52,
     borderRadius: 26,
     overflow: 'hidden',
-    shadowColor: colors.neonCyan,
+    shadowColor: colors.primary,
     shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.4,
+    shadowOpacity: 0.3,
     shadowRadius: 16,
     elevation: 8,
   },
@@ -861,7 +861,7 @@ const styles = StyleSheet.create({
   },
   previewModalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.95)',
+    backgroundColor: colors.scrimMedia,
   },
   previewModalSafeArea: {
     flex: 1,
@@ -906,14 +906,14 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(147, 51, 234, 0.15)',
+    backgroundColor: alpha(colors.primary, 0.16),
     borderWidth: 1,
-    borderColor: 'rgba(147, 51, 234, 0.4)',
+    borderColor: alpha(colors.primary, 0.45),
     paddingVertical: 14,
     borderRadius: 20,
   },
   restoreBtnText: {
-    color: colors.neonCyan,
+    color: colors.primarySoft,
     fontSize: 13,
     fontWeight: '800',
   },
@@ -922,14 +922,14 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(244, 63, 94, 0.15)',
+    backgroundColor: alpha(colors.dangerRose, 0.16),
     borderWidth: 1,
-    borderColor: 'rgba(244, 63, 94, 0.4)',
+    borderColor: alpha(colors.dangerRose, 0.45),
     paddingVertical: 14,
     borderRadius: 20,
   },
   deleteBtnText: {
-    color: colors.dangerRose,
+    color: colors.dangerLight,
     fontSize: 13,
     fontWeight: '800',
   },

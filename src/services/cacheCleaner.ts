@@ -55,10 +55,12 @@ export async function getStoredStats(): Promise<SavedStats> {
   } catch (err) {
     console.warn('Could not read stats file:', err);
   }
+  // A fresh install has genuinely saved nothing. Seeding a baseline here made
+  // the app claim gigabytes it never freed.
   return {
-    lifetimeSavedBytes: 1024 * 1024 * 1024 * 3.2, // Baseline fallback if clean
-    photosSavedBytes: 1024 * 1024 * 950,
-    videosSavedBytes: 1024 * 1024 * 1024 * 2.25,
+    lifetimeSavedBytes: 0,
+    photosSavedBytes: 0,
+    videosSavedBytes: 0,
   };
 }
 
@@ -182,7 +184,7 @@ async function scanDirectoryRecursive(
 }
 
 /**
- * Real device cache scan using FileSystem.cacheDirectory & fallback estimation baseline
+ * Scans the app cache directory and reports exactly what is there.
  */
 export const scanDeviceCache = async (): Promise<CacheScanResult> => {
   const collectedFiles: RealCacheFile[] = [];
@@ -212,20 +214,6 @@ export const scanDeviceCache = async (): Promise<CacheScanResult> => {
     }
   }
 
-  // Ensure user always gets realistic cache estimates if sandbox cache is fresh
-  if (systemBytes < 1024 * 1024 * 10) {
-    systemBytes += 1024 * 1024 * 145.4; // ~145 MB
-    systemCount += 42;
-  }
-  if (appBytes < 1024 * 1024 * 10) {
-    appBytes += 1024 * 1024 * 98.2; // ~98 MB
-    appCount += 28;
-  }
-  if (browserBytes < 1024 * 1024 * 10) {
-    browserBytes += 1024 * 1024 * 215.6; // ~215 MB
-    browserCount += 16;
-  }
-
   const totalCacheBytes = systemBytes + appBytes + browserBytes;
   const storedStats = await getStoredStats();
 
@@ -244,7 +232,7 @@ export const scanDeviceCache = async (): Promise<CacheScanResult> => {
         sizeBytes: systemBytes,
         formattedSize: formatByteSize(systemBytes),
         iconName: 'system',
-        accentColor: '#00F2FE',
+        accentColor: '#9333EA',
         selected: true,
         fileCount: systemCount,
       },
@@ -255,7 +243,7 @@ export const scanDeviceCache = async (): Promise<CacheScanResult> => {
         sizeBytes: appBytes,
         formattedSize: formatByteSize(appBytes),
         iconName: 'app',
-        accentColor: '#A855F7',
+        accentColor: '#D946EF',
         selected: true,
         fileCount: appCount,
       },
@@ -303,20 +291,9 @@ export const clearSelectedCache = async (
     }
   }
 
-  // Fallback calculated cleared bytes if sandbox had minimal files
-  if (clearedBytes === 0) {
-    if (selectedCategoryIds.includes('system')) clearedBytes += 1024 * 1024 * 145.4;
-    if (selectedCategoryIds.includes('app')) {
-      const appB = 1024 * 1024 * 98.2;
-      clearedBytes += appB;
-      clearedPhotos += appB;
-    }
-    if (selectedCategoryIds.includes('browser')) {
-      const brB = 1024 * 1024 * 215.6;
-      clearedBytes += brB;
-      clearedVideos += brB;
-    }
-  }
+  // Nothing deleted means nothing to record — reporting an invented amount here
+  // both lied to the user and permanently inflated the lifetime counters.
+  if (clearedBytes === 0) return 0;
 
   // 2. Update persistent stored stats
   const currentStats = await getStoredStats();

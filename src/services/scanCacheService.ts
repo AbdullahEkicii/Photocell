@@ -8,6 +8,11 @@ interface CacheEntry<T> {
 }
 
 const DEFAULT_TTL_MS = 30 * 60 * 1000; // 30 minutes cache lifetime for long sessions
+// A finished photo scan stays valid much longer. Expiring it after 30 minutes
+// meant leaving the cleaning screen and coming back later silently threw the
+// results away and re-ran the whole scan. Deleting photos already updates the
+// cache in place, and pull-to-refresh re-scans on demand.
+const PHOTO_SCAN_TTL_MS = 6 * 60 * 60 * 1000;
 
 class ScanCacheManager {
   private photoScanCache: CacheEntry<ScanResult> | null = null;
@@ -15,7 +20,7 @@ class ScanCacheManager {
   private timelineCache: CacheEntry<MonthGroup[]> | null = null;
 
   // --- PHOTO SCAN CACHE ---
-  public getPhotoScan(maxAgeMs = DEFAULT_TTL_MS): ScanResult | null {
+  public getPhotoScan(maxAgeMs = PHOTO_SCAN_TTL_MS): ScanResult | null {
     if (!this.photoScanCache) return null;
     const age = Date.now() - this.photoScanCache.timestamp;
     if (age > maxAgeMs) {

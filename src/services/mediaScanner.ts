@@ -10,9 +10,12 @@ import {
   VisualFingerprint,
 } from './hashing';
 import { ScanCacheService } from './scanCacheService';
+import { getNotificationSettings } from './notificationService';
 
 export interface PhotoAsset extends MediaLibrary.Asset {
   fileSize?: number;
+  /** True when fileSize came from the library average, not from the file itself. */
+  sizeIsEstimated?: boolean;
   similarGroupId?: number;
   sharpnessScore?: number;
   visualFingerprint?: VisualFingerprint;
@@ -29,14 +32,32 @@ export interface ScanResult {
 const SIMILAR_TIME_WINDOW_MS = 25000; // 25s window for potential burst/similar sequences
 const BLUR_SCORE_THRESHOLD = 32.0; // Contrast-normalized sharpness threshold
 const BLUR_VARIANCE_MIN_THRESHOLD = 95.0; // Absolute Laplacian variance threshold
-const MAX_ASSETS_TO_SCAN = 4000; // Expanded to scan entire gallery smoothly without memory spikes
-const MAX_BLUR_CANDIDATES = 120; // Expanded blur search window
+// Scanning the whole gallery on every run was the main reason full scans felt
+// endless — each of these assets gets at least one native size-lookup, and a
+// meaningful fraction of them (duplicate/blur candidates) get a full
+// decode+resize on top of that. Bounding to the most recent N (already sorted
+// newest-first) keeps a full scan in the tens-of-seconds range instead of
+// minutes, while "Deep AI analysis" trades speed for covering more history.
+const MAX_ASSETS_DEEP = 2500;
+const MAX_ASSETS_QUICK = 1200;
+// Blur analysis decodes every candidate, so the cap is what the "Deep AI
+// analysis" setting actually trades off: accuracy against scan time.
+const MAX_BLUR_CANDIDATES_DEEP = 240;
+const MAX_BLUR_CANDIDATES_QUICK = 80;
+
+/** Similarity tolerances. Deep mode casts a wider net for near-duplicates. */
+const SIMILARITY_TOLERANCE = {
+  deep: { hamming: 12, color: 60, aspect: 0.25 },
+  quick: { hamming: 8, color: 40, aspect: 0.15 },
+} as const;
 
 export interface PermissionStatusResult {
   granted: boolean;
   isLimited: boolean;
   accessPrivileges?: 'all' | 'limited' | 'none';
   status: string;
+  /** False once the OS will no longer show the permission dialog. */
+  canAskAgain?: boolean;
 }
 
 export const checkMediaPermissionsStatus = async (): Promise<PermissionStatusResult> => {
@@ -48,6 +69,7 @@ export const checkMediaPermissionsStatus = async (): Promise<PermissionStatusRes
     isLimited,
     accessPrivileges: perm.accessPrivileges,
     status: perm.status,
+    canAskAgain: perm.canAskAgain,
   };
 };
 
@@ -60,6 +82,28 @@ export const requestMediaPermissions = async (): Promise<PermissionStatusResult>
     isLimited,
     accessPrivileges: perm.accessPrivileges,
     status: perm.status,
+    canAskAgain: perm.canAskAgain,
+  };
+};
+
+/**
+ * Asks for photo AND video access in one go (so the user is not prompted again
+ * later by the video tools) and reports whether it is *full* access.
+ *
+ * `granted` here means full access only. On Android 14+ the user can pick
+ * "select photos", which the OS reports as a granted permission but with
+ * `accessPrivileges: 'limited'` - the cleaner cannot see the rest of the
+ * gallery in that mode, so that is deliberately not treated as granted.
+ */
+export const requestFullMediaAccess = async (): Promise<PermissionStatusResult> => {
+  const perm = await MediaLibrary.requestPermissionsAsync(false, ['photo', 'video']);
+  const isLimited = perm.accessPrivileges === 'limited';
+  return {
+    granted: perm.status === 'granted' && !isLimited,
+    isLimited,
+    accessPrivileges: perm.accessPrivileges,
+    status: perm.status,
+    canAskAgain: perm.canAskAgain,
   };
 };
 
@@ -72,7 +116,7 @@ async function getAllAssets(
     maxItems?: number;
   } = {}
 ): Promise<MediaLibrary.Asset[]> {
-  const { album, maxItems = MAX_ASSETS_TO_SCAN } = options;
+  const { album, maxItems = MAX_ASSETS_DEEP } = options;
   let allAssets: MediaLibrary.Asset[] = [];
   let after: string | undefined = undefined;
   let hasNextPage = true;
@@ -119,7 +163,11 @@ function filterOldScreenshots(assets: MediaLibrary.Asset[]): PhotoAsset[] {
  * Resolve local accessible URI for an asset
  */
 async function resolveAssetUri(asset: MediaLibrary.Asset): Promise<string> {
-  if (asset.uri.startsWith('ph://') || asset.uri.startsWith('content://')) {
+  // Only iOS `ph://` asset-library URIs need resolving to a real file path.
+  // Android `content://` URIs are read directly by ImageManipulator, and
+  // resolving them anyway used to cost one extra native round trip per
+  // candidate — roughly a third of this pipeline's total bridge-call time.
+  if (asset.uri.startsWith('ph://')) {
     const assetInfo = await MediaLibrary.getAssetInfoAsync(asset).catch(() => null);
     if (assetInfo?.localUri) return assetInfo.localUri;
   }
@@ -142,7 +190,14 @@ export type ScanProgressCallback = (info: ScanProgressInfo) => void;
  */
 async function detectVisualDuplicatesAndSimilar(
   assets: MediaLibrary.Asset[],
-  onProgress?: (current: number, total: number) => void
+  onProgress?: (current: number, total: number) => void,
+  deepScan = true,
+  // Reused across incremental batches so an asset fingerprinted in an
+  // earlier batch never gets natively re-decoded — only genuinely new
+  // candidates in `assets` pay that cost. Matching itself still runs across
+  // every fingerprint ever seen, so a burst that straddles a batch boundary
+  // is still caught.
+  fingerprintCache: Map<string, VisualFingerprint> = new Map()
 ): Promise<{
   exactDuplicates: PhotoAsset[][];
   similarPhotos: PhotoAsset[][];
@@ -202,10 +257,13 @@ async function detectVisualDuplicatesAndSimilar(
     cluster.forEach((asset) => uniqueCandidateMap.set(asset.id, asset));
   });
 
-  const candidatesToFingerprint = Array.from(uniqueCandidateMap.values());
-  const fingerprints = new Map<string, VisualFingerprint>();
+  const candidatesToFingerprint = Array.from(uniqueCandidateMap.values()).filter(
+    (asset) => !fingerprintCache.has(asset.id)
+  );
+  const fingerprints = fingerprintCache;
 
-  // 2. Micro-batched Fingerprint Generation
+  // 2. Micro-batched Fingerprint Generation (only for candidates not already
+  // in the cache — see the `fingerprintCache` param above)
   const FINGERPRINT_BATCH = 3;
   for (let i = 0; i < candidatesToFingerprint.length; i += FINGERPRINT_BATCH) {
     const batch = candidatesToFingerprint.slice(i, i + FINGERPRINT_BATCH);
@@ -289,7 +347,12 @@ async function detectVisualDuplicatesAndSimilar(
       const colorDist = computeColorDistance(fpA.colorSignature, fpB.colorSignature);
       const aspectDiff = Math.abs(fpA.aspectRatio - fpB.aspectRatio);
 
-      if (hamming <= 10 && colorDist < 50 && aspectDiff < 0.2) {
+      const tolerance = deepScan ? SIMILARITY_TOLERANCE.deep : SIMILARITY_TOLERANCE.quick;
+      if (
+        hamming <= tolerance.hamming &&
+        colorDist < tolerance.color &&
+        aspectDiff < tolerance.aspect
+      ) {
         group.push(assetB as PhotoAsset);
         assignedToSimilar.add(assetB.id);
       }
@@ -435,11 +498,26 @@ async function detectBlurryPhotos(
  * Chunked file size calculator preventing native bridge queue overflow
  */
 async function computeRealTotalSize(assets: PhotoAsset[]): Promise<number> {
-  let total = 0;
   const CHUNK_SIZE = 12;
+  const unmeasured: PhotoAsset[] = [];
+  let measuredTotal = 0;
+  let measuredCount = 0;
 
-  for (let i = 0; i < assets.length; i += CHUNK_SIZE) {
-    const chunk = assets.slice(i, i + CHUNK_SIZE);
+  // Across incremental scan batches this gets called repeatedly with a
+  // growing, mostly-overlapping candidate list. An asset already measured
+  // (real or estimated) keeps that value instead of hitting the filesystem
+  // again — its size can't have changed since the last pass.
+  let knownTotal = 0;
+  const toMeasure = assets.filter((asset) => {
+    if (typeof asset.fileSize === 'number') {
+      knownTotal += asset.fileSize;
+      return false;
+    }
+    return true;
+  });
+
+  for (let i = 0; i < toMeasure.length; i += CHUNK_SIZE) {
+    const chunk = toMeasure.slice(i, i + CHUNK_SIZE);
     await Promise.all(
       chunk.map(async (asset) => {
         try {
@@ -447,196 +525,420 @@ async function computeRealTotalSize(assets: PhotoAsset[]): Promise<number> {
           const info = await FileSystem.getInfoAsync(fileUri).catch(() => null);
           if (info && info.exists && 'size' in info && typeof info.size === 'number') {
             asset.fileSize = info.size;
-            total += info.size;
-          } else {
-            const fallbackSize = 2.5 * 1024 * 1024;
-            asset.fileSize = fallbackSize;
-            total += fallbackSize;
+            asset.sizeIsEstimated = false;
+            measuredTotal += info.size;
+            measuredCount += 1;
+            return;
           }
         } catch {
-          const fallbackSize = 2.5 * 1024 * 1024;
-          asset.fileSize = fallbackSize;
-          total += fallbackSize;
+          // Falls through to the estimate below.
         }
+        unmeasured.push(asset);
       })
     );
 
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
 
-  return total;
+  // Assets whose file could not be stat'ed get this library's own average
+  // rather than a hardcoded constant, so the headline figure stays anchored to
+  // the device. With nothing measurable at all they count as zero.
+  const average = measuredCount > 0 ? measuredTotal / measuredCount : 0;
+  for (const asset of unmeasured) {
+    asset.fileSize = Math.round(average);
+    asset.sizeIsEstimated = average > 0;
+  }
+
+  return knownTotal + measuredTotal + Math.round(average) * unmeasured.length;
 }
 
+/**
+ * Guards against two full scans running at once — e.g. a background
+ * pre-warm kicked off at app launch and the Photos tab both wanting a scan a
+ * moment later. Every caller that shows up while a scan is running joins the
+ * same run and gets its own progress updates, instead of starting a second,
+ * competing scan.
+ */
+/** How many photos make up one incremental scan step. The first batch is what
+ * the user actually waits on — everything after it happens quietly in the
+ * background while they're already reviewing what's been found so far. */
+const SCAN_BATCH_SIZE = 500;
+
+export interface ScanBatchMeta {
+  /** True once every batch up to the deep/quick-scan cap has been processed. */
+  isFinal: boolean;
+  scannedAssets: number;
+  totalAssets: number;
+}
+
+export type ScanPartialResultCallback = (result: ScanResult, meta: ScanBatchMeta) => void;
+
+/** Assets deleted during this session; see deleteMediaAssets. */
+const deletedAssetIds = new Set<string>();
+
+let inFlightScan: Promise<ScanResult> | null = null;
+const inFlightListeners = new Set<ScanProgressCallback>();
+const partialResultListeners = new Set<ScanPartialResultCallback>();
+
+function broadcastScanProgress(info: ScanProgressInfo): void {
+  inFlightListeners.forEach((listener) => listener(info));
+}
+
+function broadcastPartialResult(result: ScanResult, meta: ScanBatchMeta): void {
+  partialResultListeners.forEach((listener) => listener(result, meta));
+}
+
+/**
+ * Scans the gallery for duplicates, similar shots, screenshots and blur.
+ *
+ * The returned promise resolves once the ENTIRE scan (every batch, up to the
+ * deep/quick-scan cap) is done — existing callers that just `await` this
+ * don't need to change. But the real work happens in bounded batches of
+ * `SCAN_BATCH_SIZE`, and each batch's result is cached and broadcast via
+ * `onPartialResult` as soon as it's ready. Pass that callback if you want to
+ * show the first ~500 photos' worth of results immediately instead of
+ * waiting for the whole gallery — that's the intended way to use this now.
+ */
 export const scanPhotos = async (
   onProgress?: ScanProgressCallback,
-  forceRefresh = false
+  forceRefresh = false,
+  onPartialResult?: ScanPartialResultCallback
 ): Promise<ScanResult> => {
-  // Check in-memory cache first for instantaneous tab transitions
+  // If a scan is already running — e.g. the background pre-warm kicked off
+  // at app launch, or another screen already asked — always join it, even if
+  // the cache already holds a partial result from one of its earlier
+  // batches. Checking the cache first here would let this caller grab a
+  // stale snapshot and never hear about the batches still to come. This
+  // applies to a forced refresh too: a second scan next to a running one would
+  // double the native work and have both overwrite the same cache.
+  if (inFlightScan) {
+    if (onProgress) inFlightListeners.add(onProgress);
+    if (onPartialResult) partialResultListeners.add(onPartialResult);
+    try {
+      return await inFlightScan;
+    } finally {
+      if (onProgress) inFlightListeners.delete(onProgress);
+      if (onPartialResult) partialResultListeners.delete(onPartialResult);
+    }
+  }
+
+  // Nothing running — a cached result (from a scan that already finished, or
+  // one that errored out mid-way) can be returned instantly.
   if (!forceRefresh) {
     const cached = ScanCacheService.getPhotoScan();
     if (cached) {
-      if (onProgress) {
-        onProgress({
-          progress: 100,
-          stepKey: 'status.items_found',
-          stepDefault: 'Tarama Tamamlandı',
-        });
-      }
+      onProgress?.({
+        progress: 100,
+        stepKey: 'dashboard.status.items_found',
+        stepDefault: 'Tarama Tamamlandı',
+      });
       return cached;
     }
   }
 
-  if (onProgress) {
-    onProgress({
-      progress: 10,
-      stepKey: 'status.scan_step_init',
-      stepDefault: 'Galeri ve Medya Dizini Başlatılıyor...',
-    });
+  if (onProgress) inFlightListeners.add(onProgress);
+  if (onPartialResult) partialResultListeners.add(onPartialResult);
+
+  inFlightScan = runFullScan().finally(() => {
+    inFlightScan = null;
+    inFlightListeners.clear();
+    partialResultListeners.clear();
+  });
+
+  try {
+    return await inFlightScan;
+  } finally {
+    if (onProgress) inFlightListeners.delete(onProgress);
+    if (onPartialResult) partialResultListeners.delete(onPartialResult);
   }
+};
+
+let latestBatchMeta: ScanBatchMeta | null = null;
+
+/**
+ * Progress of the scan currently running, or null. Lets a screen that opens
+ * mid-scan show "scanning in the background: N / M" immediately instead of
+ * waiting for the next batch to land.
+ */
+export function getLatestScanBatchMeta(): ScanBatchMeta | null {
+  return inFlightScan && latestBatchMeta && !latestBatchMeta.isFinal ? latestBatchMeta : null;
+}
+
+/** True while a scan (foreground or background pre-warm) is actively running. */
+export function isPhotoScanInProgress(): boolean {
+  return inFlightScan !== null;
+}
+
+/**
+ * Starts a scan in the background with nobody waiting on it, so the gallery
+ * is already analyzed by the time the user actually opens the Photos tab —
+ * instead of the whole pipeline only starting the moment that screen mounts.
+ * Safe to call speculatively: a cache hit or an already-running scan makes
+ * this a no-op via the coalescing in `scanPhotos`.
+ */
+export const prewarmPhotoScan = (): void => {
+  if (ScanCacheService.getPhotoScan()) return;
+  scanPhotos().catch(() => {});
+};
+
+const emptyScanResult = (): ScanResult => ({
+  totalSize: 0,
+  exactDuplicates: [],
+  similarPhotos: [],
+  screenshots: [],
+  blurryPhotos: [],
+});
+
+/**
+ * Runs the scan in bounded batches of `SCAN_BATCH_SIZE`, newest photos first.
+ *
+ * Each iteration re-examines every asset fetched *so far* (not just the new
+ * slice) for duplicates/similar shots — a fingerprint cache carried across
+ * iterations means only the genuinely new photos in each batch pay the
+ * native decode cost, so this stays cheap, while a duplicate pair that
+ * straddles a batch boundary is still caught. Screenshots and blur are
+ * per-photo checks with no cross-photo dependency, so those genuinely only
+ * touch the new slice each time.
+ *
+ * The result is cached and broadcast after *every* batch, not just the
+ * final one — that's what lets the UI show something in seconds instead of
+ * however long the full gallery takes.
+ */
+async function runFullScan(): Promise<ScanResult> {
+  broadcastScanProgress({
+    progress: 8,
+    stepKey: 'dashboard.status.scan_step_init',
+    stepDefault: 'Galeri ve Medya Dizini Başlatılıyor...',
+  });
 
   const perm = await requestMediaPermissions();
   if (!perm.granted && perm.status !== 'granted' && !perm.isLimited) {
     throw new Error('Permission not granted');
   }
 
-  // 1. Fetch assets safely
-  const recentPhotosDesc = await getAllAssets({ maxItems: MAX_ASSETS_TO_SCAN });
+  // Honour the "Deep AI analysis" preference: it widens the similarity net,
+  // the blur search window, and how far back through the gallery a scan
+  // reaches — all at the cost of a longer scan.
+  const deepScan = await getNotificationSettings()
+    .then((s) => s.deepScanEnabled)
+    .catch(() => true);
 
-  if (onProgress) {
-    onProgress({
-      progress: 25,
-      stepKey: 'status.scan_step_screenshots',
+  const overallCap = deepScan ? MAX_ASSETS_DEEP : MAX_ASSETS_QUICK;
+
+  // 1. Fetch asset metadata up front — this is a MediaStore/Photos query, no
+  // image decoding, so it's cheap even at the full cap.
+  const allAssetsDesc = await getAllAssets({ maxItems: overallCap });
+
+  const fingerprintCache = new Map<string, VisualFingerprint>();
+  let screenshots: PhotoAsset[] = [];
+  let blurryPhotos: PhotoAsset[] = [];
+  let exactDuplicates: PhotoAsset[][] = [];
+  let similarPhotos: PhotoAsset[][] = [];
+  let latestResult: ScanResult = emptyScanResult();
+  let blurCheckedUpTo = 0;
+
+  const totalBatches = Math.max(1, Math.ceil(allAssetsDesc.length / SCAN_BATCH_SIZE));
+
+  for (let batchIndex = 0; batchIndex < totalBatches; batchIndex++) {
+    const batchEnd = Math.min(allAssetsDesc.length, (batchIndex + 1) * SCAN_BATCH_SIZE);
+    const accumulated = allAssetsDesc.slice(0, batchEnd);
+    const isFinalBatch = batchEnd >= allAssetsDesc.length;
+
+    broadcastScanProgress({
+      progress: 15,
+      stepKey: 'dashboard.status.scan_step_screenshots',
       stepDefault: 'Eski Ekran Görüntüleri Tespit Ediliyor...',
-      scannedCount: recentPhotosDesc.length,
-      totalCount: recentPhotosDesc.length,
+      scannedCount: batchEnd,
+      totalCount: allAssetsDesc.length,
     });
-  }
 
-  // 2. Filter old screenshots
-  const screenshots = filterOldScreenshots(recentPhotosDesc);
+    // 2. Screenshots — a per-photo filename/date check, cheap enough to redo
+    // over the accumulated set every batch.
+    screenshots = filterOldScreenshots(accumulated);
 
-  if (onProgress) {
-    onProgress({
-      progress: 45,
-      stepKey: 'status.scan_step_hash',
+    broadcastScanProgress({
+      progress: 40,
+      stepKey: 'dashboard.status.scan_step_hash',
       stepDefault: 'Görsel Benzerlik ve Parmak İzi Analizi Yapılıyor...',
       scannedCount: 0,
-      totalCount: recentPhotosDesc.length,
+      totalCount: accumulated.length,
     });
-  }
 
-  // 3. Group Duplicates & Similars via Visual Perceptual Hashing (dHash)
-  const { exactDuplicates, similarPhotos } = await detectVisualDuplicatesAndSimilar(
-    recentPhotosDesc,
-    (curr, tot) => {
-      if (onProgress) {
-        const sub = Math.round(45 + (curr / Math.max(1, tot)) * 20);
-        onProgress({
+    // 3. Duplicates & similar shots — reuses fingerprintCache (see its doc
+    // comment) so this batch only decodes photos it hasn't seen before.
+    const dupResult = await detectVisualDuplicatesAndSimilar(
+      accumulated,
+      (curr, tot) => {
+        const sub = Math.round(40 + (curr / Math.max(1, tot)) * 25);
+        broadcastScanProgress({
           progress: sub,
-          stepKey: 'status.scan_step_hash',
+          stepKey: 'dashboard.status.scan_step_hash',
           stepDefault: 'Görsel Benzerlik ve Parmak İzi Analizi Yapılıyor...',
           scannedCount: curr,
           totalCount: tot,
         });
-      }
-    }
-  );
+      },
+      deepScan,
+      fingerprintCache
+    );
+    exactDuplicates = dupResult.exactDuplicates;
+    similarPhotos = dupResult.similarPhotos;
 
-  const exactFlat = exactDuplicates.flat();
-  const similarFlat = similarPhotos.flat();
-  const exactIds = new Set(exactFlat.map((s) => s.id));
-  const similarIds = new Set(similarFlat.map((s) => s.id));
-  const screenshotIds = new Set(screenshots.map((s) => s.id));
+    const exactIds = new Set(exactDuplicates.flat().map((s) => s.id));
+    const similarIds = new Set(similarPhotos.flat().map((s) => s.id));
+    const screenshotIds = new Set(screenshots.map((s) => s.id));
 
-  // 4. Bound blur candidates to prevent RAM explosion
-  const blurCandidates = recentPhotosDesc
-    .filter((a) => !exactIds.has(a.id) && !similarIds.has(a.id) && !screenshotIds.has(a.id))
-    .slice(0, MAX_BLUR_CANDIDATES);
+    // 4. Blur — only the newly available slice needs analysis; a photo's
+    // sharpness doesn't depend on any other photo, so earlier batches'
+    // results just carry forward (minus anything freshly reclassified as a
+    // duplicate/screenshot on this pass).
+    const newSlice = accumulated.slice(blurCheckedUpTo);
+    const newBlurCandidates = newSlice
+      .filter((a) => !exactIds.has(a.id) && !similarIds.has(a.id) && !screenshotIds.has(a.id))
+      .slice(0, deepScan ? MAX_BLUR_CANDIDATES_DEEP : MAX_BLUR_CANDIDATES_QUICK);
 
-  if (onProgress) {
-    onProgress({
+    broadcastScanProgress({
       progress: 70,
-      stepKey: 'status.scan_step_blurry',
+      stepKey: 'dashboard.status.scan_step_blurry',
       stepDefault: 'Yapay Zeka ile Bulanıklık Analizi Yapılıyor...',
       scannedCount: 0,
-      totalCount: blurCandidates.length,
+      totalCount: newBlurCandidates.length,
     });
-  }
 
-  const blurryPhotos = await detectBlurryPhotos(blurCandidates, (curr, tot) => {
-    if (onProgress) {
-      const subProgress = Math.round(70 + (curr / Math.max(1, tot)) * 18);
-      onProgress({
+    const newlyBlurry = await detectBlurryPhotos(newBlurCandidates, (curr, tot) => {
+      const subProgress = Math.round(70 + (curr / Math.max(1, tot)) * 20);
+      broadcastScanProgress({
         progress: subProgress,
-        stepKey: 'status.scan_step_blurry',
+        stepKey: 'dashboard.status.scan_step_blurry',
         stepDefault: 'Yapay Zeka ile Bulanıklık Analizi Yapılıyor...',
         scannedCount: curr,
         totalCount: tot,
       });
-    }
-  });
+    });
 
-  if (onProgress) {
-    onProgress({
-      progress: 90,
-      stepKey: 'status.scan_step_sizes',
+    blurryPhotos = [
+      ...blurryPhotos.filter(
+        (a) => !exactIds.has(a.id) && !similarIds.has(a.id) && !screenshotIds.has(a.id)
+      ),
+      ...newlyBlurry,
+    ];
+    blurCheckedUpTo = batchEnd;
+
+    broadcastScanProgress({
+      progress: 92,
+      stepKey: 'dashboard.status.scan_step_sizes',
       stepDefault: 'Depolama Tasarrufu ve Boyutlar Hesaplanıyor...',
-      scannedCount: recentPhotosDesc.length,
-      totalCount: recentPhotosDesc.length,
+      scannedCount: batchEnd,
+      totalCount: allAssetsDesc.length,
     });
-  }
 
-  // 5. Total Size Calculation
-  const allCandidates = [
-    ...exactFlat,
-    ...similarFlat,
-    ...screenshots,
-    ...blurryPhotos,
-  ] as PhotoAsset[];
-  const totalSize = await computeRealTotalSize(allCandidates);
+    // A background batch can finish after the user already deleted some of
+    // what it found (it works from a snapshot taken when the batch started).
+    // Drop those now, or they would reappear in the results.
+    const isAlive = (a: PhotoAsset) => !deletedAssetIds.has(a.id);
+    exactDuplicates = exactDuplicates.map((g) => g.filter(isAlive)).filter((g) => g.length > 1);
+    similarPhotos = similarPhotos.map((g) => g.filter(isAlive)).filter((g) => g.length > 1);
+    screenshots = screenshots.filter(isAlive);
+    blurryPhotos = blurryPhotos.filter(isAlive);
 
-  if (onProgress) {
-    onProgress({
+    // 5. Total size — only over the (small) candidate set. computeRealTotalSize
+    // itself skips anything already measured in a previous batch.
+    const allCandidates = [
+      ...exactDuplicates.flat(),
+      ...similarPhotos.flat(),
+      ...screenshots,
+      ...blurryPhotos,
+    ] as PhotoAsset[];
+    const totalSize = await computeRealTotalSize(allCandidates);
+
+    latestResult = { totalSize, exactDuplicates, similarPhotos, screenshots, blurryPhotos };
+
+    broadcastScanProgress({
       progress: 100,
-      stepKey: 'status.items_found',
+      stepKey: 'dashboard.status.items_found',
       stepDefault: 'Tarama Tamamlandı',
-      scannedCount: recentPhotosDesc.length,
-      totalCount: recentPhotosDesc.length,
+      scannedCount: batchEnd,
+      totalCount: allAssetsDesc.length,
     });
+
+    // Cache and broadcast after every batch — this is what makes the first
+    // ~500 photos' worth of results available in seconds, with the rest
+    // streaming in quietly afterward instead of blocking on all of it.
+    ScanCacheService.setPhotoScan(latestResult);
+    latestBatchMeta = {
+      isFinal: isFinalBatch,
+      scannedAssets: batchEnd,
+      totalAssets: allAssetsDesc.length,
+    };
+    broadcastPartialResult(latestResult, latestBatchMeta);
+
+    if (!isFinalBatch) {
+      // Let the JS thread and any pending UI update breathe before grinding
+      // through the next batch — the whole point is that this keeps running
+      // quietly while the user is already looking at what's been found.
+      await new Promise((resolve) => setTimeout(resolve, 150));
+    }
   }
 
-  const scanResult: ScanResult = {
-    totalSize,
-    exactDuplicates,
-    similarPhotos,
-    screenshots,
-    blurryPhotos,
-  };
+  return latestResult;
+}
 
-  // Cache the scan result for subsequent visits
-  ScanCacheService.setPhotoScan(scanResult);
+/**
+ * Serializes every native asset deletion in the app through one queue.
+ *
+ * On Android 11+, deleting a MediaStore item the app doesn't itself own opens
+ * a system confirmation dialog via an Activity Result contract
+ * (`MediaStore.createDeleteRequest`, which `expo-media-library` drives under
+ * the hood). Firing a second one before the first has resolved crashes the
+ * app natively — a JS `try/catch` cannot save you from that, since the crash
+ * happens on the native/Activity side, not as a rejected promise.
+ *
+ * This used to be six independent call sites (the reviewer, Heavy Media, the
+ * photo/video "replace original" flows, EXIF cleaning, the vault) each
+ * calling `MediaLibrary.deleteAssetsAsync` directly — any two of them firing
+ * close together (e.g. swiping through duplicate groups quickly) could race.
+ * `deleteMediaAssets` is now the *only* place in the app allowed to call it.
+ */
+let deleteQueue: Promise<unknown> = Promise.resolve();
 
-  return scanResult;
-};
+export function deleteMediaAssets(ids: string[], freedBytes = 0): Promise<boolean> {
+  if (ids.length === 0) return Promise.resolve(true);
+
+  const run = deleteQueue
+    .catch(() => {})
+    .then(() => MediaLibrary.deleteAssetsAsync(ids))
+    .then((deleted) => {
+      if (deleted) {
+        // Remember what is gone so a scan still running in the background
+        // cannot put it back into the results, and drop it from the cached
+        // scan right away - whichever screen did the deleting.
+        ids.forEach((id) => deletedAssetIds.add(id));
+        ScanCacheService.removeDeletedAssets(ids, freedBytes);
+        ScanCacheService.invalidateTimeline();
+        ScanCacheService.invalidateVideoList();
+      }
+      return deleted;
+    })
+    .catch((error) => {
+      // Declining Android's "allow this app to delete?" prompt rejects with
+      // ERR_PERMISSIONS. That is the user's choice, not a failure worth a
+      // console error (and, in development, a red toast).
+      if (error?.code !== 'ERR_PERMISSIONS') console.error('Failed to delete assets', error);
+      return false;
+    });
+
+  // Keep the queue alive regardless of this call's outcome, so whoever is
+  // next in line still waits their turn.
+  deleteQueue = run;
+
+  return run;
+}
 
 export const deleteAssets = async (assets: PhotoAsset[]): Promise<boolean> => {
   if (assets.length === 0) return true;
 
-  try {
-    const ids = assets.map((a) => a.id);
-    const totalFreed = assets.reduce(
-      (sum, a) => sum + (a.fileSize || 2.5 * 1024 * 1024),
-      0
-    );
-    const success = await MediaLibrary.deleteAssetsAsync(ids);
-    if (success) {
-      // In-place cache mutation removes deleted assets without triggering a full re-scan
-      ScanCacheService.removeDeletedAssets(ids, totalFreed);
-      ScanCacheService.invalidateTimeline();
-    }
-    return success;
-  } catch (error) {
-    console.error('Failed to delete assets', error);
-    return false;
-  }
+  const ids = assets.map((a) => a.id);
+  const totalFreed = assets.reduce((sum, a) => sum + (a.fileSize || 0), 0);
+  // The in-place cache update (no full re-scan) happens inside deleteMediaAssets.
+  return deleteMediaAssets(ids, totalFreed);
 };

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import {
   View,
   Text,
@@ -13,22 +13,9 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
-import Animated, {
-  FadeInDown,
-  FadeInUp,
-  FadeIn,
-  useSharedValue,
-  useAnimatedStyle,
-  cancelAnimation,
-  withRepeat,
-  withTiming,
-  Easing,
-  withSequence,
-} from 'react-native-reanimated';
+import Animated, { FadeInDown } from 'react-native-reanimated';
 import { LinearGradient } from 'expo-linear-gradient';
 import {
-  Globe,
-  Settings,
   Play,
   Film,
   Sparkles,
@@ -37,23 +24,27 @@ import {
   RefreshCw,
   Save,
   X,
-  SlidersHorizontal,
 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
-import { Canvas, SweepGradient, Circle, vec } from '@shopify/react-native-skia';
 import { useVideoPlayer, VideoView } from 'expo-video';
 import { FlashList } from '@shopify/flash-list';
 
 import { AtmosphericBackground } from '../components/glass/AtmosphericBackground';
 import { GlassPanel } from '../components/glass/GlassPanel';
 import { GlassButton } from '../components/glass/GlassButton';
+import { CircularGauge } from '../components/glass/CircularGauge';
+import { ScreenHeader } from '../components/layout/ScreenHeader';
+import { FilterChips } from '../components/layout/FilterChips';
+import { EmptyState, LoadingState } from '../components/layout/EmptyState';
 import { SettingsModal } from '../components/settings/SettingsModal';
-import { colors } from '../theme/colors';
+import { colors, alpha, radius } from '../theme/colors';
 import {
   fetchDeviceVideos,
   compressVideo,
   replaceOriginalVideoWithCompressed,
   saveCompressedVideoToLibrary,
+  cancelVideoCompression,
+  discardCompressedVideo,
   VideoAsset,
   CompressionResult,
   formatByteSize,
@@ -65,13 +56,11 @@ import { recordCleanedVideos } from '../services/cacheCleaner';
 
 type SizeFilterType = 'all' | '500mb' | '100mb' | '50mb';
 
-// Separate Video Player Component using expo-video
-const VideoPreviewModal: React.FC<{ uri: string | null; onClose: () => void }> = ({
-  uri,
-  onClose,
-}) => {
-  if (!uri) return null;
-
+// The player lives in its own component so `useVideoPlayer` is only ever
+// called when there is a uri. It used to sit behind an early `return null`
+// in the same component, which changed the hook count between renders the
+// moment a user tapped play — React throws on that, taking the app down.
+const VideoPlayerContent: React.FC<{ uri: string; onClose: () => void }> = ({ uri, onClose }) => {
   const player = useVideoPlayer(uri, (p) => {
     p.loop = true;
     p.play();
@@ -85,7 +74,7 @@ const VideoPreviewModal: React.FC<{ uri: string | null; onClose: () => void }> =
   };
 
   return (
-    <Modal visible={Boolean(uri)} transparent animationType="fade" onRequestClose={handleClose}>
+    <Modal visible transparent animationType="fade" onRequestClose={handleClose}>
       <View style={styles.videoPlayerModalOverlay}>
         <SafeAreaView style={styles.videoPlayerSafeArea}>
           <TouchableOpacity
@@ -110,8 +99,17 @@ const VideoPreviewModal: React.FC<{ uri: string | null; onClose: () => void }> =
   );
 };
 
-export const VideoCompressorScreen: React.FC = () => {
-  const { t, i18n } = useTranslation();
+const VideoPreviewModal: React.FC<{ uri: string | null; onClose: () => void }> = ({
+  uri,
+  onClose,
+}) => (uri ? <VideoPlayerContent key={uri} uri={uri} onClose={onClose} /> : null);
+
+interface Props {
+  onBack: () => void;
+}
+
+export const VideoCompressorScreen: React.FC<Props> = ({ onBack }) => {
+  const { t } = useTranslation();
   const insets = useSafeAreaInsets();
   const [videos, setVideos] = useState<VideoAsset[]>(() => ScanCacheService.getVideoList() || []);
   const [loading, setLoading] = useState<boolean>(() => !ScanCacheService.getVideoList());
@@ -123,34 +121,10 @@ export const VideoCompressorScreen: React.FC = () => {
   const [compressionResult, setCompressionResult] = useState<CompressionResult | null>(null);
   const [actionProcessing, setActionProcessing] = useState<boolean>(false);
   const [settingsVisible, setSettingsVisible] = useState<boolean>(false);
-  const [filter, setFilter] = useState<SizeFilterType>('all');
   const [sizeFilter, setSizeFilter] = useState<SizeFilterType>('all');
 
-  // Video preview player states
+  // Video preview player
   const [previewUri, setPreviewUri] = useState<string | null>(null);
-  const [previewModalVisible, setPreviewModalVisible] = useState<boolean>(false);
-
-  // Background pulsing glow animation
-  const pulseAnim = useSharedValue(1);
-
-  useEffect(() => {
-    pulseAnim.value = withRepeat(
-      withSequence(
-        withTiming(1.08, { duration: 2500, easing: Easing.inOut(Easing.ease) }),
-        withTiming(1, { duration: 2500, easing: Easing.inOut(Easing.ease) })
-      ),
-      -1,
-      true
-    );
-
-    return () => {
-      cancelAnimation(pulseAnim);
-    };
-  }, [pulseAnim]);
-
-  const animatedGlowStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: pulseAnim.value }],
-  }));
 
   const loadVideos = useCallback(async (forceRefresh = false) => {
     try {
@@ -174,120 +148,162 @@ export const VideoCompressorScreen: React.FC = () => {
     }
   }, [loadVideos]);
 
-  const toggleLanguage = () => {
-    const current = i18n.language || 'tr';
-    const nextLang = current.startsWith('tr') ? 'en' : 'tr';
-    i18n.changeLanguage(nextLang);
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+  // Identifies the compression currently allowed to update the screen. Closing
+  // the dialog mid-compression used to leave it running in the background; when
+  // it finished it overwrote the result of whichever video was open by then,
+  // so "replace original" could delete one video and swap in another's output.
+  const runIdRef = useRef(0);
+  const cancellationIdRef = useRef<string | null>(null);
+
+  const stopRunningCompression = () => {
+    runIdRef.current += 1;
+    if (cancellationIdRef.current) {
+      cancelVideoCompression(cancellationIdRef.current);
+      cancellationIdRef.current = null;
+    }
   };
+
+  const closeModal = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    stopRunningCompression();
+    discardCompressedVideo(compressionResult?.outputPath);
+    setModalVisible(false);
+    setSelectedVideo(null);
+    setCompressionResult(null);
+    setCompressing(false);
+    setIsSuccess(false);
+    setActionProcessing(false);
+  };
+
+  // Leaving the screen must not leave a compression (and its temp file) behind.
+  useEffect(() => () => stopRunningCompression(), []);
 
   const handleStartCompress = async (video: VideoAsset) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+    stopRunningCompression();
+    const runId = runIdRef.current;
     setSelectedVideo(video);
     setModalVisible(true);
     setCompressing(true);
     setIsSuccess(false);
+    setCompressionResult(null);
     setProgressPercent(0);
 
     try {
-      const result = await compressVideo(video, (percent) => {
-        setProgressPercent(percent);
-      });
+      const result = await compressVideo(
+        video,
+        (percent) => {
+          if (runId === runIdRef.current) setProgressPercent(percent);
+        },
+        (id) => {
+          if (runId === runIdRef.current) cancellationIdRef.current = id;
+        }
+      );
 
+      if (runId !== runIdRef.current) {
+        // Cancelled or superseded while it ran: drop the output.
+        discardCompressedVideo(result.outputPath);
+        return;
+      }
+
+      cancellationIdRef.current = null;
       setCompressionResult(result);
       setIsSuccess(true);
       setCompressing(false);
-      Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-
-      AnalyticsService.trackVideoCompressed(
-        result.originalSizeBytes,
-        result.compressedSizeBytes,
-        result.savedBytes,
-        video.qualityTag
+      Haptics.notificationAsync(
+        result.isSmaller
+          ? Haptics.NotificationFeedbackType.Success
+          : Haptics.NotificationFeedbackType.Warning
       ).catch(() => {});
+
+      if (result.isSmaller) {
+        AnalyticsService.trackVideoCompressed(
+          result.originalSizeBytes,
+          result.compressedSizeBytes,
+          result.savedBytes,
+          video.qualityTag
+        ).catch(() => {});
+      }
     } catch (error) {
+      // A cancelled run rejects too; that is not an error worth showing.
+      if (runId !== runIdRef.current) return;
+      cancellationIdRef.current = null;
       setCompressing(false);
       setModalVisible(false);
+      setSelectedVideo(null);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
-      Alert.alert(
-        'Hata',
-        t('compressor.action_failed', 'İşlem gerçekleştirilemedi. Lütfen galeri izinlerini kontrol edin.')
-      );
+      Alert.alert(t('general.error'), t('compressor.action_failed'));
     }
   };
 
+  const finishAfterAction = () => {
+    runIdRef.current += 1;
+    setModalVisible(false);
+    setSelectedVideo(null);
+    setCompressionResult(null);
+    setIsSuccess(false);
+  };
+
   const handleReplaceOriginal = async () => {
-    if (!selectedVideo || !compressionResult?.outputPath || actionProcessing) return;
+    if (!selectedVideo || !compressionResult?.outputPath || !compressionResult.isSmaller) return;
+    if (actionProcessing) return;
     setActionProcessing(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
 
     try {
-      const success = await replaceOriginalVideoWithCompressed(
+      const outcome = await replaceOriginalVideoWithCompressed(
         selectedVideo.id,
         compressionResult.outputPath
       );
-      if (success) {
-        if (compressionResult.savedBytes > 0) {
-          recordCleanedVideos(compressionResult.savedBytes).catch(() => {});
-        }
-        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-        Alert.alert(
-          t('compressor.congratulations', 'Tebrikler!'),
-          t('compressor.replaced_success', 'Eski video silindi, yeni hal galerine eklendi!')
-        );
-        closeModal();
-        loadVideos();
-      } else {
+
+      if (outcome === 'failed') {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
-        Alert.alert(
-          'Hata',
-          t('compressor.action_failed', 'İşlem gerçekleştirilemedi. Lütfen galeri izinlerini kontrol edin.')
-        );
+        Alert.alert(t('general.error'), t('compressor.action_failed'));
+        return;
       }
+
+      if (outcome === 'replaced') {
+        // Only a deleted original actually frees space.
+        recordCleanedVideos(compressionResult.savedBytes).catch(() => {});
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+        Alert.alert(t('compressor.congratulations'), t('compressor.replaced_success'));
+      } else {
+        // The smaller copy was saved but the user declined deleting the original.
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning).catch(() => {});
+        Alert.alert(t('general.success'), t('compressor.copy_only'));
+      }
+      finishAfterAction();
+      loadVideos(true);
     } catch (err) {
       console.error('Error replacing video:', err);
+      Alert.alert(t('general.error'), t('compressor.action_failed'));
     } finally {
       setActionProcessing(false);
     }
   };
 
   const handleSaveOnly = async () => {
-    if (!compressionResult?.outputPath || actionProcessing) return;
+    if (!compressionResult?.outputPath || !compressionResult.isSmaller || actionProcessing) return;
     setActionProcessing(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
 
     try {
       const success = await saveCompressedVideoToLibrary(compressionResult.outputPath);
       if (success) {
-        if (compressionResult.savedBytes > 0) {
-          recordCleanedVideos(compressionResult.savedBytes).catch(() => {});
-        }
+        // A copy next to the original frees nothing, so it is not counted as savings.
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-        Alert.alert(
-          t('compressor.congratulations', 'Tebrikler!'),
-          t('compressor.saved_success', 'Yeni video galeriye kaydedildi!')
-        );
-        closeModal();
+        Alert.alert(t('compressor.congratulations'), t('compressor.saved_success'));
+        finishAfterAction();
       } else {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
-        Alert.alert(
-          'Hata',
-          t('compressor.action_failed', 'İşlem gerçekleştirilemedi. Lütfen galeri izinlerini kontrol edin.')
-        );
+        Alert.alert(t('general.error'), t('compressor.action_failed'));
       }
     } catch (err) {
       console.error('Error saving video:', err);
+      Alert.alert(t('general.error'), t('compressor.action_failed'));
     } finally {
       setActionProcessing(false);
     }
-  };
-
-  const closeModal = () => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
-    setModalVisible(false);
-    setSelectedVideo(null);
-    setCompressionResult(null);
-    setActionProcessing(false);
   };
 
   const playVideo = (uri: string) => {
@@ -319,13 +335,13 @@ export const VideoCompressorScreen: React.FC = () => {
   const renderVideoItem = useCallback(
     ({ item, index }: { item: VideoAsset; index: number }) => {
       const isPurpleAccent = index % 2 === 1;
-      const accentColor = isPurpleAccent ? colors.electricPurple : colors.neonCyan;
+      const accentColor = isPurpleAccent ? colors.accent : colors.primary;
 
       return (
         <View style={styles.cardWrapper}>
           <GlassPanel
             borderRadius={30}
-            borderColor={isPurpleAccent ? 'rgba(168,85,247,0.3)' : 'rgba(0,242,254,0.3)'}
+            borderColor={alpha(accentColor, 0.24)}
             style={styles.videoCard}
             contentStyle={styles.videoCardContent}
             intensity={30}
@@ -336,7 +352,7 @@ export const VideoCompressorScreen: React.FC = () => {
               onPress={() => playVideo(item.uri)}
               style={styles.thumbnailBox}
             >
-              <Image source={{ uri: item.uri }} style={styles.videoThumbnail} resizeMode="cover" />
+              <Image source={{ uri: item.uri }} style={styles.videoThumbnail} resizeMethod="resize" resizeMode="cover" />
               <LinearGradient
                 colors={['rgba(15, 23, 42, 0.2)', 'rgba(3, 7, 18, 0.85)']}
                 style={StyleSheet.absoluteFill}
@@ -347,7 +363,7 @@ export const VideoCompressorScreen: React.FC = () => {
                   style={styles.playButton}
                   contentStyle={styles.playButtonContent}
                 >
-                  <Play color={colors.textPrimary} size={22} fill={colors.textPrimary} />
+                  <Play color="#FFFFFF" size={22} fill="#FFFFFF" />
                 </GlassPanel>
               </View>
             </TouchableOpacity>
@@ -386,8 +402,9 @@ export const VideoCompressorScreen: React.FC = () => {
                 </View>
 
                 <GlassButton
-                  borderRadius={24}
-                  borderColor={accentColor}
+                  compact
+                  borderRadius={20}
+                  borderColor={alpha(accentColor, 0.45)}
                   intensity={20}
                   style={styles.compressButton}
                   contentStyle={styles.compressButtonContent}
@@ -411,109 +428,50 @@ export const VideoCompressorScreen: React.FC = () => {
       <AtmosphericBackground />
 
       <SafeAreaView style={styles.safeArea} edges={['top']}>
-        {/* Top Header Bar */}
-        <Animated.View entering={FadeInDown.duration(500)} style={styles.headerBar}>
-          <TouchableOpacity activeOpacity={0.8} onPress={toggleLanguage} style={styles.langButton}>
-            <Globe color={colors.neonCyan} size={18} strokeWidth={2.4} />
-            <Text style={styles.langText}>
-              {(i18n.language || 'tr').startsWith('tr') ? 'TR' : 'EN'}
-            </Text>
-          </TouchableOpacity>
+        <ScreenHeader
+          title={t('compressor.title')}
+          onBack={onBack}
+          onRefresh={() => loadVideos(true)}
+          onOpenSettings={() => setSettingsVisible(true)}
+        />
 
-          {/* Right Action Icons: Refresh & Settings */}
-          <View style={styles.headerRightActions}>
-            <TouchableOpacity 
-              activeOpacity={0.8} 
-              onPress={() => {
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
-                loadVideos(true);
-              }} 
-              style={styles.settingsButton}
-            >
-              <RefreshCw color={colors.neonCyan} size={18} strokeWidth={2.4} />
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              activeOpacity={0.8}
-              onPress={() => {
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
-                setSettingsVisible(true);
-              }}
-              style={styles.settingsButton}
-            >
-              <Settings color={colors.neonCyan} size={20} strokeWidth={2.4} />
-            </TouchableOpacity>
-          </View>
-        </Animated.View>
-
-        {/* Header Hero Section */}
-        <Animated.View entering={FadeInDown.duration(600).delay(100)} style={styles.headerSection}>
-          <Text style={styles.pageTitle}>{t('compressor.title')}</Text>
-
+        <Animated.View entering={FadeInDown.duration(500).delay(60)} style={styles.headerSection}>
           <View style={styles.savingsPill}>
-            <PiggyBank color={colors.successMint} size={16} style={{ marginRight: 6 }} />
+            <PiggyBank color={colors.successMint} size={15} />
             <Text style={styles.savingsPillText}>
               {t('compressor.savings_badge', { size: formattedTotalSaving })}
             </Text>
           </View>
 
-          {/* Size Filter Pills */}
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.filterScrollContent}
-            style={styles.filterScrollView}
-          >
-            {(['all', '500mb', '100mb', '50mb'] as SizeFilterType[]).map((filterKey) => {
-              const isSelected = sizeFilter === filterKey;
-              return (
-                <TouchableOpacity
-                  key={filterKey}
-                  activeOpacity={0.8}
-                  onPress={() => {
-                    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
-                    setSizeFilter(filterKey);
-                  }}
-                  style={[styles.filterPill, isSelected && styles.filterPillActive]}
-                >
-                  <Text style={[styles.filterPillText, isSelected && styles.filterPillTextActive]}>
-                    {filterKey === 'all'
-                      ? t('compressor.filter_all', 'Tümü')
-                      : filterKey === '500mb'
-                      ? t('compressor.filter_500mb', '> 500 MB')
-                      : filterKey === '100mb'
-                      ? t('compressor.filter_100mb', '> 100 MB')
-                      : t('compressor.filter_50mb', '> 50 MB')}
-                  </Text>
-                </TouchableOpacity>
-              );
-            })}
-          </ScrollView>
+          <FilterChips
+            scrollable
+            value={sizeFilter}
+            onChange={setSizeFilter}
+            options={[
+              { value: 'all', label: t('compressor.filter_all') },
+              { value: '500mb', label: t('compressor.filter_500mb') },
+              { value: '100mb', label: t('compressor.filter_100mb') },
+              { value: '50mb', label: t('compressor.filter_50mb') },
+            ]}
+          />
         </Animated.View>
 
         {/* Virtualized FlashList for High Performance & Zero Memory Leaks */}
         {loading ? (
-          <Animated.View entering={FadeIn} style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color={colors.neonCyan} style={{ marginBottom: 12 }} />
-            <Text style={styles.loadingText}>
-              {t('dashboard.status.scanning', 'Galeri Taranıyor...')}
-            </Text>
-          </Animated.View>
+          <LoadingState label={t('dashboard.status.scanning')} />
         ) : filteredVideos.length === 0 ? (
-          <Animated.View entering={FadeIn} style={styles.emptyContainer}>
-            <GlassPanel
-              borderRadius={24}
-              style={styles.emptyCard}
-              contentStyle={styles.emptyCardContent}
-            >
-              <VideoOff color={colors.textMuted} size={44} style={{ marginBottom: 12 }} />
-              <Text style={styles.emptyText}>
-                {videos.length === 0
-                  ? t('reviewer.no_photos', 'Video Bulunamadı')
-                  : t('compressor.no_videos_match', 'Bu filtreye uygun video bulunamadı.')}
-              </Text>
-            </GlassPanel>
-          </Animated.View>
+          <EmptyState
+            icon={VideoOff}
+            title={
+              videos.length === 0
+                ? t('compressor.no_videos')
+                : t('compressor.no_videos_match')
+            }
+            description={
+              videos.length === 0 ? t('compressor.no_videos_desc') : undefined
+            }
+            accent={colors.accent}
+          />
         ) : (
           <View style={{ flex: 1 }}>
             <FlashList
@@ -522,7 +480,7 @@ export const VideoCompressorScreen: React.FC = () => {
               keyExtractor={(item) => item.id}
               contentContainerStyle={[
                 styles.flashListContent,
-                { paddingBottom: Math.max(140, 100 + insets.bottom) },
+                { paddingBottom: Math.max(40, insets.bottom + 20) },
               ]}
               showsVerticalScrollIndicator={false}
             />
@@ -540,7 +498,8 @@ export const VideoCompressorScreen: React.FC = () => {
         <View style={styles.modalOverlay}>
           <GlassPanel
             borderRadius={32}
-            borderColor="rgba(255, 255, 255, 0.15)"
+            borderColor={colors.border}
+            fillColor={colors.surface}
             style={styles.modalCard}
             contentStyle={styles.modalContent}
             intensity={45}
@@ -554,41 +513,45 @@ export const VideoCompressorScreen: React.FC = () => {
                 /* Progress State */
                 <View style={styles.progressState}>
                   <View style={styles.gaugeWrapper}>
-                    <Canvas style={styles.skiaCanvas}>
-                      <Circle
-                        cx={48}
-                        cy={48}
-                        r={40}
-                        style="stroke"
-                        strokeWidth={8}
-                        color="rgba(255,255,255,0.1)"
-                      />
-                      <Circle cx={48} cy={48} r={40} style="stroke" strokeWidth={8}>
-                        <SweepGradient
-                          c={vec(48, 48)}
-                          colors={[colors.neonCyan, colors.electricPurple, colors.neonCyan]}
-                        />
-                      </Circle>
-                    </Canvas>
-                    <View style={styles.percentCenter}>
-                      <Text style={styles.percentText}>{progressPercent}%</Text>
-                    </View>
+                    <CircularGauge
+                      value={`${progressPercent}`}
+                      unit="%"
+                      size={112}
+                      strokeWidth={9}
+                      progress={progressPercent / 100}
+                    />
                   </View>
 
                   <Text style={styles.modalTitle}>{t('compressor.compressing')}</Text>
                   <Text style={styles.modalSubtext} numberOfLines={1}>
                     {t('compressor.optimizing', { name: selectedVideo?.filename || '' })}
                   </Text>
+                  <TouchableOpacity
+                    activeOpacity={0.7}
+                    onPress={closeModal}
+                    style={styles.dismissButton}
+                    accessibilityRole="button"
+                  >
+                    <Text style={styles.dismissText}>{t('compressor.cancel')}</Text>
+                  </TouchableOpacity>
                 </View>
               ) : (
                 /* Success State with Interactive Preview & One-Tap Actions */
                 <View style={styles.successState}>
                   <View style={styles.successBadge}>
-                    <Sparkles color={colors.neonCyan} size={32} />
+                    <Sparkles color={colors.primary} size={28} />
                   </View>
 
-                  <Text style={styles.successTitle}>{t('compressor.congratulations')}</Text>
-                  <Text style={styles.successSubtext}>{t('compressor.ready')}</Text>
+                  <Text style={styles.successTitle}>
+                    {compressionResult?.isSmaller
+                      ? t('compressor.congratulations')
+                      : t('compressor.no_gain_title')}
+                  </Text>
+                  <Text style={styles.successSubtext}>
+                    {compressionResult?.isSmaller
+                      ? t('compressor.ready')
+                      : t('compressor.no_gain_video')}
+                  </Text>
 
                   {/* Video Preview Card */}
                   {selectedVideo && (
@@ -602,6 +565,7 @@ export const VideoCompressorScreen: React.FC = () => {
                       <Image
                         source={{ uri: selectedVideo.uri }}
                         style={styles.previewThumbnail}
+                        resizeMethod="resize"
                         resizeMode="cover"
                       />
                       <LinearGradient
@@ -610,7 +574,7 @@ export const VideoCompressorScreen: React.FC = () => {
                       />
                       <View style={styles.previewPlayCenter}>
                         <View style={styles.previewPlayCircle}>
-                          <Play color={colors.neonCyan} size={20} fill={colors.neonCyan} />
+                          <Play color={colors.primary} size={20} fill={colors.primary} />
                         </View>
                         <Text style={styles.previewTitleText}>
                           {t('compressor.preview_title')}
@@ -623,9 +587,7 @@ export const VideoCompressorScreen: React.FC = () => {
                   <View style={styles.spaceSavedBox}>
                     <Text style={styles.spaceSavedLabel}>{t('compressor.total_saved')}</Text>
                     <Text style={styles.spaceSavedValue}>
-                      {compressionResult?.formattedSaved ||
-                        selectedVideo?.formattedPotentialSaving ||
-                        '0 MB'}
+                      {compressionResult?.formattedSaved ?? formatByteSize(0)}
                     </Text>
                     {compressionResult && compressionResult.originalSizeBytes > 0 && (
                       <View style={styles.comparisonRow}>
@@ -638,7 +600,7 @@ export const VideoCompressorScreen: React.FC = () => {
                         <Text style={styles.comparisonArrow}>→</Text>
                         <Text style={styles.comparisonText}>
                           {t('compressor.new_size')}:{' '}
-                          <Text style={[styles.comparisonVal, { color: colors.neonCyan }]}>
+                          <Text style={[styles.comparisonVal, { color: colors.primary }]}>
                             {formatByteSize(compressionResult.compressedSizeBytes)}
                           </Text>
                         </Text>
@@ -649,6 +611,7 @@ export const VideoCompressorScreen: React.FC = () => {
                   {/* One-Tap Action Buttons */}
                   <View style={styles.modalActionGroup}>
                     {/* Primary Action: Save & Replace Original */}
+                    {compressionResult?.isSmaller && (
                     <TouchableOpacity
                       activeOpacity={0.85}
                       disabled={actionProcessing}
@@ -656,28 +619,30 @@ export const VideoCompressorScreen: React.FC = () => {
                       style={styles.replaceButtonWrapper}
                     >
                       <LinearGradient
-                        colors={['rgba(0, 242, 254, 0.2)', 'rgba(16, 185, 129, 0.2)']}
+                        colors={colors.primaryGradient}
                         style={styles.replaceButtonGradient}
                       >
                         {actionProcessing ? (
                           <ActivityIndicator
-                            color={colors.neonCyan}
+                            color="#FFFFFF"
                             size="small"
                             style={{ marginRight: 8 }}
                           />
                         ) : (
-                          <RefreshCw color={colors.neonCyan} size={18} style={{ marginRight: 8 }} />
+                          <RefreshCw color="#FFFFFF" size={18} style={{ marginRight: 8 }} />
                         )}
                         <Text style={styles.replaceButtonText}>
                           {t('compressor.replace_action')}
                         </Text>
                       </LinearGradient>
                     </TouchableOpacity>
+                    )}
 
                     {/* Secondary Action: Save Compressed Only */}
+                    {compressionResult?.isSmaller && (
                     <GlassButton
                       borderRadius={24}
-                      borderColor="rgba(255, 255, 255, 0.15)"
+                      borderColor={colors.border}
                       style={styles.saveOnlyButton}
                       onPress={handleSaveOnly}
                       disabled={actionProcessing}
@@ -697,6 +662,7 @@ export const VideoCompressorScreen: React.FC = () => {
                         </Text>
                       </View>
                     </GlassButton>
+                    )}
 
                     {/* Dismiss */}
                     <TouchableOpacity
@@ -726,57 +692,10 @@ export const VideoCompressorScreen: React.FC = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: colors.oledBlack,
+    backgroundColor: colors.canvas,
   },
   safeArea: {
     flex: 1,
-  },
-  headerBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  langButton: {
-    height: 38,
-    paddingHorizontal: 12,
-    borderRadius: 14,
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
-    borderWidth: 1,
-    borderColor: 'rgba(0, 242, 254, 0.25)',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-  },
-  langText: {
-    fontSize: 13,
-    fontWeight: '800',
-    color: colors.neonCyan,
-    letterSpacing: 1,
-  },
-  appTitle: {
-    fontSize: 24,
-    fontWeight: '900',
-    color: colors.neonCyan,
-  },
-  headerRightActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  settingsButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 14,
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
-    borderWidth: 1,
-    borderColor: 'rgba(0, 242, 254, 0.25)',
-    alignItems: 'center',
-    justifyContent: 'center',
   },
   headerSection: {
     paddingHorizontal: 20,
@@ -792,12 +711,13 @@ const styles = StyleSheet.create({
   savingsPill: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(16, 185, 129, 0.12)',
+    gap: 6,
+    backgroundColor: alpha(colors.successMint, 0.1),
     borderWidth: 1,
-    borderColor: 'rgba(16, 185, 129, 0.3)',
+    borderColor: alpha(colors.successMint, 0.26),
     paddingHorizontal: 12,
     paddingVertical: 6,
-    borderRadius: 16,
+    borderRadius: 14,
     alignSelf: 'flex-start',
     marginBottom: 14,
   },
@@ -806,42 +726,6 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
   },
-  filterScrollView: {
-    maxHeight: 48,
-    marginBottom: 8,
-  },
-  filterScrollContent: {
-    flexDirection: 'row',
-    gap: 8,
-    paddingHorizontal: 2,
-    alignItems: 'center',
-  },
-  filterRow: {
-    flexDirection: 'row',
-    gap: 8,
-    marginBottom: 8,
-  },
-  filterPill: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 12,
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  filterPillActive: {
-    backgroundColor: 'rgba(0, 242, 254, 0.16)',
-    borderColor: colors.neonCyan,
-  },
-  filterPillText: {
-    fontSize: 12,
-    fontWeight: '700',
-    color: colors.textSecondary,
-  },
-  filterPillTextActive: {
-    color: colors.neonCyan,
-    fontWeight: '800',
-  },
   flashListContent: {
     paddingHorizontal: 20,
     paddingTop: 10,
@@ -849,34 +733,6 @@ const styles = StyleSheet.create({
   },
   cardWrapper: {
     marginBottom: 16,
-  },
-  loadingContainer: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 60,
-  },
-  loadingText: {
-    color: colors.textSecondary,
-    fontSize: 14,
-    fontWeight: '600',
-  },
-  emptyContainer: {
-    paddingHorizontal: 20,
-    paddingVertical: 40,
-  },
-  emptyCard: {
-    borderRadius: 24,
-  },
-  emptyCardContent: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: 32,
-  },
-  emptyText: {
-    color: colors.textMuted,
-    fontSize: 15,
-    fontWeight: '600',
-    textAlign: 'center',
   },
   videoCard: {
     borderRadius: 30,
@@ -932,7 +788,7 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   tagPill: {
-    backgroundColor: 'rgba(255, 255, 255, 0.06)',
+    backgroundColor: colors.surfaceSunken,
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 8,
@@ -946,7 +802,7 @@ const styles = StyleSheet.create({
   },
   divider: {
     height: 1,
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
+    backgroundColor: colors.border,
     marginBottom: 12,
   },
   cardFooter: {
@@ -976,13 +832,17 @@ const styles = StyleSheet.create({
     fontWeight: '900',
   },
   compressButton: {
-    borderRadius: 24,
+    // GlassButton defaults to width: '100%', which in this row pushed the
+    // saving text out of view and let the button balloon. Size it to its
+    // content with a fixed height instead.
+    width: 'auto',
+    height: 40,
+    borderRadius: 20,
     flexShrink: 0,
-    minWidth: 105,
+    minWidth: 112,
   },
   compressButtonContent: {
     paddingHorizontal: 16,
-    paddingVertical: 10,
   },
   compressButtonText: {
     fontSize: 13,
@@ -990,7 +850,7 @@ const styles = StyleSheet.create({
   },
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(3, 7, 18, 0.85)',
+    backgroundColor: colors.scrim,
     justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: 20,
@@ -1056,9 +916,9 @@ const styles = StyleSheet.create({
     width: 64,
     height: 64,
     borderRadius: 32,
-    backgroundColor: 'rgba(0, 242, 254, 0.15)',
+    backgroundColor: alpha(colors.primary, 0.1),
     borderWidth: 1,
-    borderColor: 'rgba(0, 242, 254, 0.4)',
+    borderColor: alpha(colors.primary, 0.28),
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 16,
@@ -1081,7 +941,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     marginBottom: 16,
     borderWidth: 1,
-    borderColor: 'rgba(0, 242, 254, 0.4)',
+    borderColor: alpha(colors.primary, 0.3),
     position: 'relative',
   },
   previewThumbnail: {
@@ -1104,19 +964,19 @@ const styles = StyleSheet.create({
     borderRadius: 22,
     backgroundColor: 'rgba(15, 23, 42, 0.8)',
     borderWidth: 1,
-    borderColor: colors.neonCyan,
+    borderColor: colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
   },
   previewTitleText: {
     fontSize: 12,
     fontWeight: '800',
-    color: colors.textPrimary,
+    color: '#FFFFFF',
   },
   spaceSavedBox: {
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
+    backgroundColor: colors.surfaceSunken,
     borderWidth: 1,
-    borderColor: colors.whiteBorderLight,
+    borderColor: colors.border,
     paddingHorizontal: 16,
     paddingVertical: 10,
     borderRadius: 16,
@@ -1145,7 +1005,7 @@ const styles = StyleSheet.create({
     marginTop: 6,
     paddingTop: 6,
     borderTopWidth: 1,
-    borderTopColor: 'rgba(255, 255, 255, 0.08)',
+    borderTopColor: colors.border,
     width: '100%',
   },
   comparisonText: {
@@ -1159,7 +1019,7 @@ const styles = StyleSheet.create({
   },
   comparisonArrow: {
     fontSize: 13,
-    color: colors.neonCyan,
+    color: colors.primary,
     fontWeight: '900',
   },
   modalActionGroup: {
@@ -1168,10 +1028,8 @@ const styles = StyleSheet.create({
   },
   replaceButtonWrapper: {
     width: '100%',
-    borderRadius: 24,
+    borderRadius: radius.control,
     overflow: 'hidden',
-    borderWidth: 1,
-    borderColor: 'rgba(0, 242, 254, 0.5)',
   },
   replaceButtonGradient: {
     paddingVertical: 14,
@@ -1180,7 +1038,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
   },
   replaceButtonText: {
-    color: colors.neonCyan,
+    color: '#FFFFFF',
     fontSize: 14,
     fontWeight: '800',
   },

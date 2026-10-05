@@ -1,23 +1,23 @@
 import React, { useEffect } from 'react';
 import { View, Text, StyleSheet, Image, Dimensions } from 'react-native';
 import { useTranslation } from 'react-i18next';
-import Animated, { 
-  useSharedValue, 
-  useAnimatedStyle, 
-  withSpring, 
-  withTiming, 
-  withSequence, 
-  withRepeat, 
-  Easing, 
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  withSpring,
+  withTiming,
+  withSequence,
+  withRepeat,
+  Easing,
   runOnJS,
   FadeOut
 } from 'react-native-reanimated';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Sparkles, Zap } from 'lucide-react-native';
+import { Sparkles } from 'lucide-react-native';
 
 import { AtmosphericBackground } from '../glass/AtmosphericBackground';
 import { GlassPanel } from '../glass/GlassPanel';
-import { colors } from '../../theme/colors';
+import { colors, alpha } from '../../theme/colors';
 
 const { width } = Dimensions.get('window');
 
@@ -27,7 +27,7 @@ interface Props {
 
 export const CustomSplashScreen: React.FC<Props> = ({ onFinish }) => {
   const { t } = useTranslation();
-  
+
   const iconScale = useSharedValue(0.4);
   const iconOpacity = useSharedValue(0);
   const progressWidth = useSharedValue(0);
@@ -68,9 +68,9 @@ export const CustomSplashScreen: React.FC<Props> = ({ onFinish }) => {
         <Animated.View style={[styles.iconWrapper, animatedIconStyle]}>
           <GlassPanel
             borderRadius={40}
-            borderColor="rgba(147, 51, 234, 0.35)"
+            borderColor={alpha(colors.primary, 0.28)}
             fillColor="rgba(255, 255, 255, 0.9)"
-            glowAccent={colors.neonCyan}
+            glowAccent={colors.primary}
             style={styles.iconGlassCard}
             contentStyle={styles.iconGlassContent}
           >
@@ -89,7 +89,7 @@ export const CustomSplashScreen: React.FC<Props> = ({ onFinish }) => {
 
         {/* Subtitle Eyebrow Badge */}
         <View style={styles.badgePill}>
-          <Sparkles color={colors.neonCyan} size={13} style={{ marginRight: 6 }} />
+          <Sparkles color={colors.primary} size={13} style={{ marginRight: 6 }} />
           <Text style={styles.badgeText}>
             {t('general.subtitle', 'Depolama Analizi & Optimizasyonu')}
           </Text>
@@ -101,7 +101,7 @@ export const CustomSplashScreen: React.FC<Props> = ({ onFinish }) => {
         <View style={styles.progressTrack}>
           <Animated.View style={[styles.progressFill, animatedProgressStyle]}>
             <LinearGradient
-              colors={[colors.neonCyan, colors.electricPurple, colors.successMint]}
+              colors={[colors.primary, colors.accent]}
               style={StyleSheet.absoluteFill}
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 0 }}
@@ -116,7 +116,7 @@ export const CustomSplashScreen: React.FC<Props> = ({ onFinish }) => {
 const styles = StyleSheet.create({
   container: {
     ...StyleSheet.absoluteFill,
-    backgroundColor: colors.oledBlack,
+    backgroundColor: colors.canvas,
     alignItems: 'center',
     justifyContent: 'center',
     zIndex: 999,
@@ -135,9 +135,9 @@ const styles = StyleSheet.create({
     width: 140,
     height: 140,
     borderRadius: 40,
-    shadowColor: colors.neonCyan,
+    shadowColor: colors.primary,
     shadowOffset: { width: 0, height: 12 },
-    shadowOpacity: 0.25,
+    shadowOpacity: 0.18,
     shadowRadius: 24,
     elevation: 10,
   },
@@ -152,21 +152,18 @@ const styles = StyleSheet.create({
     borderRadius: 22,
   },
   appTitle: {
-    fontSize: 36,
+    fontSize: 34,
     fontWeight: '900',
-    color: colors.neonCyan,
-    letterSpacing: -1.5,
-    marginBottom: 8,
-    textShadowColor: 'rgba(147, 51, 234, 0.25)',
-    textShadowOffset: { width: 0, height: 4 },
-    textShadowRadius: 15,
+    color: colors.textPrimary,
+    letterSpacing: -1.2,
+    marginBottom: 10,
   },
   badgePill: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(147, 51, 234, 0.08)',
+    backgroundColor: alpha(colors.primary, 0.08),
     borderWidth: 1,
-    borderColor: 'rgba(147, 51, 234, 0.25)',
+    borderColor: alpha(colors.primary, 0.22),
     paddingHorizontal: 14,
     paddingVertical: 6,
     borderRadius: 20,
@@ -174,7 +171,7 @@ const styles = StyleSheet.create({
   badgeText: {
     fontSize: 12,
     fontWeight: '800',
-    color: colors.neonCyan,
+    color: colors.primary,
     letterSpacing: 0.5,
   },
   bottomProgressContainer: {
@@ -189,7 +186,7 @@ const styles = StyleSheet.create({
     maxWidth: 240,
     height: 4,
     borderRadius: 2,
-    backgroundColor: colors.whiteBorderLight,
+    backgroundColor: colors.surfaceSunken,
     overflow: 'hidden',
   },
   progressFill: {

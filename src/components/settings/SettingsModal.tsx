@@ -8,9 +8,11 @@ import {
   ScrollView,
   Switch,
   Alert,
+  ActivityIndicator,
+  Linking,
 } from 'react-native';
 import { useTranslation } from 'react-i18next';
-import Animated, { ZoomIn } from 'react-native-reanimated';
+import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
 import {
   X,
   Bell,
@@ -24,19 +26,22 @@ import {
   Maximize,
 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
+import Constants from 'expo-constants';
 
 import { GlassPanel } from '../glass/GlassPanel';
 import { GlassButton } from '../glass/GlassButton';
-import { colors } from '../../theme/colors';
+import { colors, alpha, radius } from '../../theme/colors';
 import {
   getNotificationSettings,
   saveNotificationSettings,
   sendTestNotification,
   ReminderFrequency,
   AppNotificationSettings,
+  TestNotificationResult,
 } from '../../services/notificationService';
 import { saveStoredStats } from '../../services/cacheCleaner';
 import { AnalyticsService } from '../../services/analyticsService';
+import { ScanCacheService } from '../../services/scanCacheService';
 
 interface SettingsModalProps {
   visible: boolean;
@@ -60,7 +65,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     deepScanEnabled: true,
     fullscreenEnabled: false,
   });
-  const [testSent, setTestSent] = useState(false);
+  const [testState, setTestState] = useState<'idle' | 'sending' | 'sent' | 'failed'>('idle');
 
   useEffect(() => {
     if (visible) {
@@ -68,7 +73,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         setSettings(s);
         if (onFullscreenChange) onFullscreenChange(s.fullscreenEnabled);
       });
-      setTestSent(false);
+      setTestState('idle');
     }
   }, [visible, onFullscreenChange]);
 
@@ -84,19 +89,41 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     if (key === 'fullscreenEnabled' && onFullscreenChange) {
       onFullscreenChange(value as boolean);
     }
+    if (key === 'deepScanEnabled') {
+      // The cached result was produced with the old thresholds, so it would
+      // otherwise keep being served and the toggle would look inert.
+      ScanCacheService.invalidatePhotoScan();
+    }
   };
 
   const handleSendTestNotification = async () => {
+    if (testState === 'sending') return;
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
-    const success = await sendTestNotification();
-    if (success) {
-      setTestSent(true);
+    setTestState('sending');
+
+    const result: TestNotificationResult = await sendTestNotification();
+
+    if (result === 'sent') {
+      setTestState('sent');
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-      Alert.alert(
-        t('general.success'),
-        t('settings.test_notification_sent')
-      );
+      Alert.alert(t('general.success'), t('settings.test_notification_sent'));
+      return;
     }
+
+    setTestState('failed');
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
+
+    if (result === 'blocked') {
+      // Permanently denied — the OS won't show the permission dialog again,
+      // so the only way forward is the system Settings screen.
+      Alert.alert(t('general.error'), t('settings.test_notification_blocked'), [
+        { text: t('settings.cancel'), style: 'cancel' },
+        { text: t('settings.open_os_settings'), onPress: () => Linking.openSettings().catch(() => {}) },
+      ]);
+      return;
+    }
+
+    Alert.alert(t('general.error'), t('settings.test_notification_failed'));
   };
 
   const changeLang = (lang: string) => {
@@ -137,8 +164,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       animationType="fade"
       onRequestClose={onClose}
     >
-      <View style={styles.modalOverlay}>
-        <Animated.View entering={ZoomIn.duration(280)} style={styles.modalContainer}>
+      <Animated.View entering={FadeIn.duration(200)} style={styles.modalOverlay}>
+        <Animated.View
+          entering={FadeInDown.duration(340).springify().damping(19).stiffness(190)}
+          style={styles.modalContainer}
+        >
           <GlassPanel
             borderRadius={32}
             borderColor="rgba(226, 232, 240, 0.95)"
@@ -146,7 +176,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             intensity={40}
             style={styles.panel}
             contentStyle={styles.panelContent}
-            glowAccent={colors.neonCyan}
+            glowAccent={colors.primary}
           >
             {/* Header */}
             <View style={styles.header}>
@@ -173,7 +203,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               {/* SECTION 1: Notifications */}
               <View style={styles.section}>
                 <View style={styles.sectionHeader}>
-                  <Bell color={colors.neonCyan} size={18} strokeWidth={2.4} />
+                  <Bell color={colors.primary} size={18} strokeWidth={2.4} />
                   <Text style={styles.sectionTitle}>
                     {t('settings.section_notifications')}
                   </Text>
@@ -192,12 +222,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <Switch
                     value={settings.enabled}
                     onValueChange={(val) => updateSetting('enabled', val)}
-                    trackColor={{ false: '#E2E8F0', true: colors.neonCyan }}
+                    trackColor={{ false: '#E2E8F0', true: colors.primary }}
                     thumbColor="#FFFFFF"
                   />
                 </View>
 
-                {/* Frequency Selector */}
+                {/* Frequency Selector — only meaningful once reminders are on */}
                 {settings.enabled && (
                   <View style={styles.frequencyContainer}>
                     <Text style={styles.frequencyLabel}>
@@ -235,27 +265,55 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         }
                       )}
                     </View>
-
-                    {/* Test Notification Trigger */}
-                    <TouchableOpacity
-                      activeOpacity={0.8}
-                      onPress={handleSendTestNotification}
-                      style={styles.testNotificationButton}
-                    >
-                      <Send color={colors.neonCyan} size={15} style={{ marginRight: 8 }} />
-                      <Text style={styles.testNotificationText}>
-                        {t('settings.test_notification')}
-                      </Text>
-                    </TouchableOpacity>
                   </View>
                 )}
+
+                {/* Test Notification Trigger — always available. Testing that
+                    notifications actually reach the device shouldn't require
+                    the periodic reminder to be turned on first. */}
+                <View style={styles.testNotificationContainer}>
+                  <TouchableOpacity
+                    activeOpacity={0.8}
+                    onPress={handleSendTestNotification}
+                    disabled={testState === 'sending'}
+                    style={[
+                      styles.testNotificationButton,
+                      testState === 'sent' && styles.testNotificationButtonSent,
+                      testState === 'failed' && styles.testNotificationButtonFailed,
+                    ]}
+                  >
+                    {testState === 'sending' ? (
+                      <ActivityIndicator size="small" color={colors.primary} style={{ marginRight: 8 }} />
+                    ) : testState === 'sent' ? (
+                      <Check color={colors.successMint} size={15} style={{ marginRight: 8 }} />
+                    ) : (
+                      <Send
+                        color={testState === 'failed' ? colors.dangerRose : colors.primary}
+                        size={15}
+                        style={{ marginRight: 8 }}
+                      />
+                    )}
+                    <Text
+                      style={[
+                        styles.testNotificationText,
+                        testState === 'sent' && { color: colors.successMint },
+                        testState === 'failed' && { color: colors.dangerRose },
+                      ]}
+                    >
+                      {t('settings.test_notification')}
+                    </Text>
+                  </TouchableOpacity>
+                  <Text style={styles.testNotificationHint}>
+                    {t('settings.test_notification_hint')}
+                  </Text>
+                </View>
               </View>
 
               {/* SECTION 2: Language & Deep Scan */}
               <View style={styles.section}>
                 <View style={styles.sectionHeader}>
-                  <Globe color={colors.electricPurple} size={18} strokeWidth={2.4} />
-                  <Text style={[styles.sectionTitle, { color: colors.electricPurple }]}>
+                  <Globe color={colors.accent} size={18} strokeWidth={2.4} />
+                  <Text style={[styles.sectionTitle, { color: colors.accent }]}>
                     {t('settings.section_general')}
                   </Text>
                 </View>
@@ -308,7 +366,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <View style={[styles.rowItem, { marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: '#E2E8F0' }]}>
                   <View style={styles.rowTextGroup}>
                     <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                      <Sparkles color={colors.electricPurple} size={15} style={{ marginRight: 6 }} />
+                      <Sparkles color={colors.accent} size={15} style={{ marginRight: 6 }} />
                       <Text style={styles.itemTitle}>{t('settings.deep_scan')}</Text>
                     </View>
                     <Text style={styles.itemDesc}>{t('settings.deep_scan_desc')}</Text>
@@ -316,7 +374,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <Switch
                     value={settings.deepScanEnabled}
                     onValueChange={(val) => updateSetting('deepScanEnabled', val)}
-                    trackColor={{ false: '#E2E8F0', true: colors.electricPurple }}
+                    trackColor={{ false: '#E2E8F0', true: colors.accent }}
                     thumbColor="#FFFFFF"
                   />
                 </View>
@@ -325,7 +383,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <View style={[styles.rowItem, { marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: '#E2E8F0' }]}>
                   <View style={styles.rowTextGroup}>
                     <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-                      <Maximize color={colors.neonCyan} size={15} style={{ marginRight: 6 }} />
+                      <Maximize color={colors.primary} size={15} style={{ marginRight: 6 }} />
                       <Text style={styles.itemTitle}>{t('settings.fullscreen_mode')}</Text>
                     </View>
                     <Text style={styles.itemDesc}>{t('settings.fullscreen_mode_desc')}</Text>
@@ -333,7 +391,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <Switch
                     value={settings.fullscreenEnabled}
                     onValueChange={(val) => updateSetting('fullscreenEnabled', val)}
-                    trackColor={{ false: '#E2E8F0', true: colors.neonCyan }}
+                    trackColor={{ false: '#E2E8F0', true: colors.primary }}
                     thumbColor="#FFFFFF"
                   />
                 </View>
@@ -351,7 +409,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     }}
                     style={styles.guideButton}
                   >
-                    <HelpCircle color={colors.neonCyan} size={18} style={{ marginRight: 8 }} />
+                    <HelpCircle color={colors.primary} size={18} style={{ marginRight: 8 }} />
                     <Text style={styles.guideButtonText}>
                       {t('guide.open_guide')}
                     </Text>
@@ -383,7 +441,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               {/* SECTION 5: About Card */}
               <View style={styles.aboutCard}>
                 <ShieldCheck color={colors.successMint} size={22} style={{ marginBottom: 6 }} />
-                <Text style={styles.aboutVersion}>{t('settings.app_version')}</Text>
+                <Text style={styles.aboutVersion}>
+                  {t('settings.app_version', {
+                    version: Constants.expoConfig?.version ?? '',
+                    build: Constants.expoConfig?.android?.versionCode ?? '',
+                  })}
+                </Text>
                 <Text style={styles.aboutTech}>{t('settings.app_tech')}</Text>
                 <Text style={styles.privacyNote}>
                   {t('permission.privacy_guarantee_desc')}
@@ -394,7 +457,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             {/* Bottom Done Button */}
             <GlassButton
               borderRadius={24}
-              borderColor={colors.neonCyan}
+              borderColor={colors.primary}
               style={styles.bottomDoneButton}
               onPress={() => {
                 Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
@@ -405,7 +468,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </GlassButton>
           </GlassPanel>
         </Animated.View>
-      </View>
+      </Animated.View>
     </Modal>
   );
 };
@@ -489,7 +552,7 @@ const styles = StyleSheet.create({
   sectionTitle: {
     fontSize: 13,
     fontWeight: '800',
-    color: colors.neonCyan,
+    color: colors.primary,
     textTransform: 'uppercase',
     letterSpacing: 0.8,
   },
@@ -544,7 +607,7 @@ const styles = StyleSheet.create({
   },
   freqPillActive: {
     backgroundColor: 'rgba(147, 51, 234, 0.12)',
-    borderColor: colors.neonCyan,
+    borderColor: colors.primary,
     borderWidth: 1.5,
   },
   freqPillText: {
@@ -554,24 +617,44 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   freqPillTextActive: {
-    color: colors.neonCyan,
+    color: colors.primary,
     fontWeight: '800',
+  },
+  testNotificationContainer: {
+    marginTop: 12,
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: '#E2E8F0',
   },
   testNotificationButton: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    backgroundColor: 'rgba(147, 51, 234, 0.08)',
+    backgroundColor: alpha(colors.primary, 0.08),
     borderWidth: 1,
-    borderColor: 'rgba(147, 51, 234, 0.3)',
-    borderRadius: 14,
+    borderColor: alpha(colors.primary, 0.3),
+    borderRadius: radius.chip,
     paddingVertical: 11,
-    marginTop: 12,
+  },
+  testNotificationButtonSent: {
+    backgroundColor: alpha(colors.successMint, 0.08),
+    borderColor: alpha(colors.successMint, 0.3),
+  },
+  testNotificationButtonFailed: {
+    backgroundColor: alpha(colors.dangerRose, 0.08),
+    borderColor: alpha(colors.dangerRose, 0.3),
   },
   testNotificationText: {
     fontSize: 13,
     fontWeight: '800',
-    color: colors.neonCyan,
+    color: colors.primary,
+  },
+  testNotificationHint: {
+    fontSize: 11,
+    color: '#64748B',
+    textAlign: 'center',
+    marginTop: 8,
+    lineHeight: 15,
   },
   langButtonsRow: {
     flexDirection: 'row',
@@ -587,7 +670,7 @@ const styles = StyleSheet.create({
   },
   langPillActive: {
     backgroundColor: 'rgba(217, 70, 239, 0.15)',
-    borderColor: colors.electricPurple,
+    borderColor: colors.accent,
     borderWidth: 1.5,
   },
   langPillText: {
@@ -596,7 +679,7 @@ const styles = StyleSheet.create({
     color: '#475569',
   },
   langPillTextActive: {
-    color: colors.electricPurple,
+    color: colors.accent,
     fontWeight: '800',
   },
   guideButton: {
@@ -612,7 +695,7 @@ const styles = StyleSheet.create({
   guideButtonText: {
     fontSize: 13,
     fontWeight: '800',
-    color: colors.neonCyan,
+    color: colors.primary,
   },
   resetButton: {
     flexDirection: 'row',
@@ -664,6 +747,6 @@ const styles = StyleSheet.create({
   bottomDoneText: {
     fontSize: 15,
     fontWeight: '900',
-    color: colors.neonCyan,
+    color: colors.primary,
   },
 });
