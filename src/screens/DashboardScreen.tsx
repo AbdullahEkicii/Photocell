@@ -1,23 +1,38 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { View, Text, StyleSheet, ActivityIndicator, TouchableOpacity, ScrollView, Platform, RefreshControl } from 'react-native';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { enter } from '../theme/motion';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, RefreshControl, ActivityIndicator } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
-import Animated, { FadeInDown, FadeInUp, FadeIn, useSharedValue, useAnimatedStyle, withRepeat, withTiming, Easing, withSequence, cancelAnimation } from 'react-native-reanimated';
+import Animated, { FadeInDown, FadeInUp, FadeIn } from 'react-native-reanimated';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Globe, Settings, Waves, ImageOff, Zap, Sparkles, ChevronRight, Clock, Copy, RefreshCw, AlertTriangle } from 'lucide-react-native';
+import { Waves, ImageOff, Zap, Sparkles, ChevronRight, Clock, Copy, RefreshCw, AlertTriangle, CheckCircle2 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 
 import { AtmosphericBackground } from '../components/glass/AtmosphericBackground';
 import { GlassPanel } from '../components/glass/GlassPanel';
 import { GlassButton } from '../components/glass/GlassButton';
 import { CircularGauge } from '../components/glass/CircularGauge';
-import { BottomNavBar, TabType } from '../components/navigation/BottomNavBar';
-import { colors } from '../theme/colors';
-import { scanPhotos, checkMediaPermissionsStatus, ScanResult, PhotoAsset, ScanProgressInfo } from '../services/mediaScanner';
+import { colors, alpha, radius } from '../theme/colors';
+import { ScreenHeader } from '../components/layout/ScreenHeader';
+import { AdBanner } from '../components/ads/AdBanner';
+import { CategoryShortcuts } from '../components/dashboard/CategoryShortcuts';
+import { EmptyState } from '../components/layout/EmptyState';
+import {
+  scanPhotos,
+  checkMediaPermissionsStatus,
+  isPhotoScanInProgress,
+  getLatestScanBatchMeta,
+  subscribeScanBatch,
+  ScanResult,
+  PhotoAsset,
+  ScanProgressInfo,
+  ScanBatchMeta,
+} from '../services/mediaScanner';
 import { PermissionGuidanceModal } from '../components/PermissionGuidanceModal';
 import { SettingsModal } from '../components/settings/SettingsModal';
 import { AnalyticsService } from '../services/analyticsService';
 import { ScanCacheService } from '../services/scanCacheService';
+import { ScanEta } from '../services/scanEta';
 
 const formatSizeParts = (bytes: number) => {
   if (bytes === 0) return { value: '0', unit: 'MB' };
@@ -28,7 +43,6 @@ const formatSizeParts = (bytes: number) => {
 
 interface Props {
   onSmartClean: (assets: PhotoAsset[], title?: string, groupedAssets?: PhotoAsset[][]) => void;
-  onNavigate?: (tab: TabType) => void;
   onFullscreenToggle?: (enabled: boolean) => void;
 }
 
@@ -37,7 +51,6 @@ interface BentoCardProps {
   title: string;
   countText: string;
   accentColor: string;
-  glowColor: string;
   onPress: () => void;
   delay?: number;
   highlightBadge?: React.ReactNode;
@@ -48,35 +61,31 @@ const BentoCard: React.FC<BentoCardProps> = ({
   title,
   countText,
   accentColor,
-  glowColor,
   onPress,
   delay = 0,
   highlightBadge,
 }) => {
   return (
-    <Animated.View entering={FadeInUp.duration(600).delay(delay).springify()} style={styles.bentoWrapper}>
+    <Animated.View entering={enter(FadeInUp.duration(600).delay(delay).springify())} style={styles.bentoWrapper}>
       <TouchableOpacity activeOpacity={0.88} onPress={onPress} style={{ width: '100%' }}>
-        <GlassPanel 
-          borderRadius={24} 
-          style={styles.bentoItem} 
+        <GlassPanel
+          borderRadius={radius.card}
+          style={styles.bentoItem}
           contentStyle={styles.bentoContentColumn}
-          intensity={30}
-          borderColor="rgba(255, 255, 255, 0.12)"
+          intensity={28}
+          borderColor={alpha(accentColor, 0.22)}
           glowAccent={accentColor}
         >
-          {/* Subtle Ambient Radial Glow on Card Top Left */}
-          <LinearGradient
-            colors={[glowColor, 'transparent']}
-            style={StyleSheet.absoluteFill}
-            start={{ x: 0, y: 0 }}
-            end={{ x: 0.8, y: 0.8 }}
-          />
-
           <View style={styles.bentoColumnHeader}>
-            <View style={[styles.iconBadge, { backgroundColor: `${accentColor}1A`, borderColor: `${accentColor}4D` }]}>
+            <View
+              style={[
+                styles.iconBadge,
+                { backgroundColor: alpha(accentColor, 0.1), borderColor: alpha(accentColor, 0.26) },
+              ]}
+            >
               {icon}
             </View>
-            <ChevronRight color="rgba(255, 255, 255, 0.3)" size={16} />
+            <ChevronRight color={colors.textMuted} size={16} />
           </View>
 
           <View style={styles.bentoColumnBody}>
@@ -98,8 +107,8 @@ const BentoCard: React.FC<BentoCardProps> = ({
   );
 };
 
-export const DashboardScreen: React.FC<Props> = ({ onSmartClean, onNavigate, onFullscreenToggle }) => {
-  const { t, i18n } = useTranslation();
+export const DashboardScreen: React.FC<Props> = ({ onSmartClean, onFullscreenToggle }) => {
+  const { t } = useTranslation();
   const insets = useSafeAreaInsets();
   const [scanResult, setScanResult] = useState<ScanResult | null>(() => ScanCacheService.getPhotoScan());
   const [loading, setLoading] = useState<boolean>(() => !ScanCacheService.getPhotoScan());
@@ -110,90 +119,172 @@ export const DashboardScreen: React.FC<Props> = ({ onSmartClean, onNavigate, onF
   const [settingsVisible, setSettingsVisible] = useState<boolean>(false);
   const [scanProgress, setScanProgress] = useState<ScanProgressInfo>({
     progress: 8,
-    stepKey: 'status.scan_step_init',
+    stepKey: 'dashboard.status.scan_step_init',
     stepDefault: 'Galeri ve Medya Dizini Başlatılıyor...',
   });
-
-  const orbTranslateY = useSharedValue(0);
-
+  // Remaining time, from the measured photos-per-second rate of the scan (see
+  // ScanEta). Counts down once a second between batch reports.
+  const [etaSeconds, setEtaSeconds] = useState<number | null>(null);
+  const etaRef = useRef<ScanEta>(new ScanEta());
+  const etaEndsAtRef = useRef<number | null>(null);
+  // Set once the first batch (the most recent ~500 photos) is in, so the
+  // full-screen scanning gauge can get out of the way immediately instead of
+  // blocking on the whole gallery. Non-null while later batches keep
+  // streaming in quietly behind the dashboard the user is already looking at.
+  const [backgroundBatch, setBackgroundBatch] = useState<{ scanned: number; total: number } | null>(
+    null
+  );
+  const isMountedRef = useRef(true);
   useEffect(() => {
-    orbTranslateY.value = withRepeat(
-      withSequence(
-        withTiming(15, { duration: 3200, easing: Easing.inOut(Easing.ease) }),
-        withTiming(-10, { duration: 3200, easing: Easing.inOut(Easing.ease) })
-      ),
-      -1,
-      true
-    );
-
     return () => {
-      cancelAnimation(orbTranslateY);
+      isMountedRef.current = false;
     };
-  }, [orbTranslateY]);
+  }, []);
 
-  const animatedOrbStyle = useAnimatedStyle(() => ({
-    transform: [{ translateY: orbTranslateY.value }],
-  }));
+  // Short "scan finished" notice: shown for a few seconds when a background scan that
+  // was visible ends, so people know the gallery is fully analysed.
+  const [doneNotice, setDoneNotice] = useState(false);
+  const wasScanningRef = useRef(false);
+  useEffect(() => {
+    const scanning = !!backgroundBatch || isPhotoScanInProgress();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    if (wasScanningRef.current && !scanning) {
+      setDoneNotice(true);
+      timer = setTimeout(() => setDoneNotice(false), 3500);
+    }
+    wasScanningRef.current = scanning;
+    return () => {
+      if (timer) clearTimeout(timer);
+    };
+  }, [backgroundBatch, scanResult]);
 
   const loadMedia = async (forceRefresh = false) => {
-    // 1. Check in-memory cache for 0ms instant tab transition
-    if (!forceRefresh) {
-      const cached = ScanCacheService.getPhotoScan();
-      if (cached) {
-        setScanResult(cached);
-        setLoading(false);
-        setRefreshing(false);
-        return;
-      }
+    const cached = forceRefresh ? null : ScanCacheService.getPhotoScan();
+    const scanRunning = isPhotoScanInProgress();
+
+    // Anything already scanned is shown straight away. Coming back to this
+    // screen used to put the full-screen "scanning" gauge up again whenever a
+    // background scan was still extending the cache, even though results were
+    // sitting right there. Now a cached (possibly partial) result is always
+    // displayed immediately, and if a scan is still running we only subscribe
+    // to the batches still to come.
+    if (cached) {
+      setScanResult(cached);
+      setLoading(false);
+      setRefreshing(false);
+      if (!scanRunning) return;
+      const meta = getLatestScanBatchMeta();
+      setBackgroundBatch(meta ? { scanned: meta.scannedAssets, total: meta.totalAssets } : null);
     }
 
     const startTime = Date.now();
+    etaRef.current.reset();
+    etaEndsAtRef.current = null;
+    setEtaSeconds(null);
+    if (!cached) setBackgroundBatch(null);
     try {
       if (forceRefresh) {
         setRefreshing(true);
-      } else {
+      } else if (!cached) {
         setLoading(true);
       }
       setError(null);
-      AnalyticsService.trackScanStarted(4000).catch(() => {});
-      
+      if (!cached) AnalyticsService.trackScanStarted(4000).catch(() => {});
+
       const permStatus = await checkMediaPermissionsStatus();
       setIsLimitedAccess(permStatus.isLimited);
       if (permStatus.isLimited) {
         setShowPermissionModal(true);
       }
 
-      const result = await scanPhotos((info) => {
-        setScanProgress(info);
-      }, forceRefresh);
-      setScanResult(result);
+      const result = await scanPhotos(
+        (info) => {
+          if (!isMountedRef.current) return;
+          setScanProgress(info);
+        },
+        forceRefresh,
+        (partial, meta: ScanBatchMeta) => {
+          if (!isMountedRef.current) return;
+          // As soon as the first ~500 photos are scanned, show them and drop
+          // out of the blocking "scanning" screen — the rest keeps coming in
+          // quietly via this same callback while the user is already looking
+          // at real results.
+          setScanResult(partial);
+          setLoading(false);
+          setRefreshing(false);
+          setBackgroundBatch(meta.isFinal ? null : { scanned: meta.scannedAssets, total: meta.totalAssets });
+          applyScanEta(meta);
+        }
+      );
 
-      const exactCount = result.exactDuplicates.flat().length;
-      const similarCount = result.similarPhotos.flat().length;
-      AnalyticsService.trackScanCompleted({
-        exactDuplicates: exactCount,
-        similarPhotos: similarCount,
-        blurryPhotos: result.blurryPhotos.length,
-        screenshots: result.screenshots.length,
-        totalRecoverableBytes: result.totalSize,
-        durationMs: Date.now() - startTime,
-      }).catch(() => {});
+      if (isMountedRef.current) setScanResult(result);
+
+      // A screen that merely joined a scan someone else started would
+      // otherwise report the same scan a second time.
+      if (!cached) {
+        const exactCount = result.exactDuplicates.flat().length;
+        const similarCount = result.similarPhotos.flat().length;
+        AnalyticsService.trackScanCompleted({
+          exactDuplicates: exactCount,
+          similarPhotos: similarCount,
+          blurryPhotos: result.blurryPhotos.length,
+          screenshots: result.screenshots.length,
+          totalRecoverableBytes: result.totalSize,
+          durationMs: Date.now() - startTime,
+        }).catch(() => {});
+      }
     } catch (e: any) {
-      setError(e.message || 'Error scanning photos');
+      if (isMountedRef.current) setError(e.message || 'Error scanning photos');
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (isMountedRef.current) {
+        setLoading(false);
+        setRefreshing(false);
+        setBackgroundBatch(null);
+      }
     }
   };
 
-  useEffect(() => {
-    const cached = ScanCacheService.getPhotoScan();
-    if (cached) {
-      setScanResult(cached);
-      setLoading(false);
-    } else {
-      loadMedia(false);
+
+  /** Feeds one batch report into the ETA and starts its countdown from there. */
+  const applyScanEta = (meta: ScanBatchMeta) => {
+    if (meta.isFinal) {
+      etaEndsAtRef.current = null;
+      setEtaSeconds(null);
+      return;
     }
+    const remainingMs = etaRef.current.update(meta.scannedAssets, meta.totalAssets, Date.now());
+    etaEndsAtRef.current = remainingMs === null ? null : Date.now() + remainingMs;
+    setEtaSeconds(remainingMs === null ? null : Math.max(1, Math.ceil(remainingMs / 1000)));
+  };
+
+  useEffect(() => {
+    return subscribeScanBatch((partial, meta) => {
+      if (!isMountedRef.current) return;
+      setScanResult(partial);
+      if (meta.isFinal) {
+        setBackgroundBatch(null);
+      } else {
+        setBackgroundBatch({ scanned: meta.scannedAssets, total: meta.totalAssets });
+      }
+      applyScanEta(meta);
+    });
+  }, []);
+
+  // Countdown between batch reports: once a second, subtract elapsed time from
+  // the last projected end. Hides itself when it reaches zero, while a batch is still pending.
+  useEffect(() => {
+    const id = setInterval(() => {
+      const endsAt = etaEndsAtRef.current;
+      if (endsAt === null) return;
+      const seconds = Math.ceil((endsAt - Date.now()) / 1000);
+      setEtaSeconds(seconds > 0 ? seconds : null);
+    }, 1000);
+    return () => clearInterval(id);
+  }, []);
+
+  useEffect(() => {
+    loadMedia(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const handleManualRefresh = () => {
@@ -218,13 +309,6 @@ export const DashboardScreen: React.FC<Props> = ({ onSmartClean, onNavigate, onF
     (scanResult?.blurryPhotos.length ?? 0);
 
   const sizeParts = formatSizeParts(scanResult?.totalSize || 0);
-
-  const toggleLanguage = () => {
-    const current = i18n.language || 'tr';
-    const nextLang = current.startsWith('tr') ? 'en' : 'tr';
-    i18n.changeLanguage(nextLang);
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
-  };
 
   const handleSmartClean = () => {
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
@@ -252,61 +336,48 @@ export const DashboardScreen: React.FC<Props> = ({ onSmartClean, onNavigate, onF
       <AtmosphericBackground />
 
       <SafeAreaView style={styles.safeArea} edges={['top']}>
-        {/* Top Header Bar */}
-        <Animated.View entering={FadeInDown.duration(500)} style={styles.headerBar}>
-          {/* Language Switcher Button */}
-          <TouchableOpacity 
-            activeOpacity={0.8}
-            onPress={toggleLanguage}
-            style={styles.langButton}
-          >
-            <Globe color={colors.neonCyan} size={18} strokeWidth={2.4} />
-            <Text style={styles.langText}>
-              {(i18n.language || 'tr').startsWith('tr') ? 'TR' : 'EN'}
+        <ScreenHeader
+          title={t('dashboard.app_title')}
+          showLanguageToggle
+          onRefresh={handleManualRefresh}
+          onOpenSettings={() => setSettingsVisible(true)}
+        />
+
+        {/* The rest of the gallery keeps scanning quietly after the first
+            batch is shown — this is the only sign of that happening. */}
+        {!loading && (backgroundBatch || isPhotoScanInProgress()) && (
+          <Animated.View entering={enter(FadeInDown.duration(300))} style={styles.backgroundScanBanner}>
+            <ActivityIndicator size="small" color={colors.primary} />
+            <Text style={styles.backgroundScanText}>
+              {backgroundBatch
+                ? t('dashboard.status.background_scanning', {
+                    scanned: backgroundBatch.scanned,
+                    total: backgroundBatch.total,
+                  })
+                : t('dashboard.status.scanning')}
             </Text>
-          </TouchableOpacity>
+          </Animated.View>
+        )}
 
-          {/* App Title */}
-          <Text style={styles.appTitle}>
-            {t('dashboard.app_title', 'FotoSil')}
-          </Text>
-
-          {/* Right Action Icons: Refresh & Settings */}
-          <View style={styles.headerRightActions}>
-            <TouchableOpacity 
-              activeOpacity={0.8}
-              onPress={handleManualRefresh}
-              style={styles.settingsButton}
-            >
-              <RefreshCw color={colors.neonCyan} size={18} strokeWidth={2.4} />
-            </TouchableOpacity>
-
-            <TouchableOpacity 
-              activeOpacity={0.8}
-              onPress={() => {
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
-                setSettingsVisible(true);
-              }}
-              style={styles.settingsButton}
-            >
-              <Settings color={colors.neonCyan} size={20} strokeWidth={2.4} />
-            </TouchableOpacity>
-          </View>
-        </Animated.View>
-
+        {!loading && doneNotice && (
+          <Animated.View entering={enter(FadeInDown.duration(300))} style={styles.backgroundScanBanner}>
+            <CheckCircle2 color={colors.successMint} size={16} strokeWidth={2.4} />
+            <Text style={styles.backgroundScanText}>{t('dashboard.status.background_done')}</Text>
+          </Animated.View>
+        )}
 
         {loading ? (
-          <Animated.View entering={FadeIn.duration(400)} style={styles.scannerCenterContainer}>
-            <GlassPanel 
-              borderRadius={36} 
-              style={styles.scannerCard} 
+          <Animated.View entering={enter(FadeIn.duration(400))} style={styles.scannerCenterContainer}>
+            <GlassPanel
+              borderRadius={36}
+              style={styles.scannerCard}
               contentStyle={styles.scannerCardContent}
               intensity={45}
-              borderColor="rgba(0, 242, 254, 0.35)"
-              glowAccent={colors.neonCyan}
+              borderColor={alpha(colors.primary, 0.25)}
+              glowAccent={colors.primary}
             >
               <LinearGradient
-                colors={['rgba(0, 242, 254, 0.12)', 'transparent', 'rgba(168, 85, 247, 0.12)']}
+                colors={[alpha(colors.primary, 0.08), 'transparent', alpha(colors.accent, 0.08)]}
                 style={StyleSheet.absoluteFill}
                 start={{ x: 0, y: 0 }}
                 end={{ x: 1, y: 1 }}
@@ -314,32 +385,28 @@ export const DashboardScreen: React.FC<Props> = ({ onSmartClean, onNavigate, onF
 
               {/* Gauge Progress Center */}
               <View style={styles.scannerGaugeWrapper}>
-                <CircularGauge 
-                  value={`${scanProgress.progress}`} 
-                  unit="%" 
-                  size={180} 
-                  strokeWidth={10} 
+                <CircularGauge
+                  value={`${scanProgress.progress}`}
+                  unit="%"
+                  size={180}
+                  strokeWidth={10}
+                  progress={scanProgress.progress / 100}
                 />
               </View>
 
               {/* Active Step Text */}
               <Text style={styles.scannerStepTitle}>
-                {t(scanProgress.stepKey, { 
-                  current: scanProgress.scannedCount || 0, 
+                {t(scanProgress.stepKey, {
+                  current: scanProgress.scannedCount || 0,
                   total: scanProgress.totalCount || 300,
-                  defaultValue: scanProgress.stepDefault 
+                  defaultValue: scanProgress.stepDefault
                 })}
               </Text>
-
-              {/* Dynamic Progress Track Line */}
-              <View style={styles.scannerProgressTrack}>
-                <View style={[styles.scannerProgressFill, { width: `${Math.max(5, scanProgress.progress)}%` }]} />
-              </View>
 
               {/* Status & Counter Badges */}
               <View style={styles.scannerBadgesRow}>
                 <View style={styles.scannerBadgePill}>
-                  <Sparkles color={colors.neonCyan} size={14} style={{ marginRight: 6 }} />
+                  <Sparkles color={colors.primary} size={14} style={{ marginRight: 6 }} />
                   <Text style={styles.scannerBadgeText}>
                     {scanProgress.scannedCount && scanProgress.totalCount
                       ? t('dashboard.status.scan_items_count', { scanned: scanProgress.scannedCount, total: scanProgress.totalCount })
@@ -347,23 +414,37 @@ export const DashboardScreen: React.FC<Props> = ({ onSmartClean, onNavigate, onF
                   </Text>
                 </View>
 
-                <View style={styles.scannerBadgePillSecondary}>
-                  <Clock color={colors.textSecondary} size={14} style={{ marginRight: 6 }} />
-                  <Text style={styles.scannerBadgeSecondaryText}>
-                    {t('dashboard.status.scan_estimated_time', { 
-                      seconds: Math.max(1, Math.ceil((100 - scanProgress.progress) / 25)) 
-                    })}
-                  </Text>
-                </View>
+                {etaSeconds !== null && (
+                  <View style={styles.scannerBadgePillSecondary}>
+                    <Clock color={colors.textSecondary} size={14} style={{ marginRight: 6 }} />
+                    <Text style={styles.scannerBadgeSecondaryText}>
+                      {t('dashboard.status.scan_estimated_time', { seconds: etaSeconds })}
+                    </Text>
+                  </View>
+                )}
               </View>
             </GlassPanel>
           </Animated.View>
         ) : error ? (
-          <Animated.View entering={FadeIn} style={styles.centerContent}>
-            <Text style={styles.errorText}>{error}</Text>
-          </Animated.View>
+          <EmptyState
+            icon={AlertTriangle}
+            title={t('dashboard.status.scan_failed')}
+            description={error}
+            accent={colors.dangerRose}
+            action={
+              <GlassButton
+                borderRadius={radius.control}
+                borderColor={alpha(colors.primary, 0.4)}
+                style={styles.retryButton}
+                onPress={() => loadMedia(true)}
+              >
+                <RefreshCw color={colors.primary} size={16} />
+                <Text style={styles.retryText}>{t('dashboard.status.retry')}</Text>
+              </GlassButton>
+            }
+          />
         ) : (
-          <ScrollView 
+          <ScrollView
             style={styles.scrollView}
             contentContainerStyle={[
               styles.scrollContent,
@@ -374,19 +455,19 @@ export const DashboardScreen: React.FC<Props> = ({ onSmartClean, onNavigate, onF
               <RefreshControl
                 refreshing={refreshing}
                 onRefresh={() => loadMedia(true)}
-                tintColor={colors.neonCyan}
-                colors={[colors.neonCyan, colors.electricPurple]}
+                tintColor={colors.primary}
+                colors={[colors.primary, colors.accent]}
               />
             }
           >
             {/* Hero Gauge Section */}
-            <Animated.View entering={FadeInUp.duration(600).delay(100).springify()}>
-              <GlassPanel 
-                style={styles.heroSection} 
+            <Animated.View entering={enter(FadeInUp.duration(600).delay(100).springify())}>
+              <GlassPanel
+                style={styles.heroSection}
                 contentStyle={styles.heroContent}
-                intensity={40}
-                borderColor="rgba(255, 255, 255, 0.15)"
-                glowAccent={colors.neonCyan}
+                intensity={36}
+                borderColor={colors.border}
+                glowAccent={colors.primary}
               >
                 <Text style={styles.heroEyebrow}>
                   {t('dashboard.gauge.recoverable')}
@@ -394,7 +475,7 @@ export const DashboardScreen: React.FC<Props> = ({ onSmartClean, onNavigate, onF
 
                 {/* Circular Glass Ring Gauge */}
                 <View style={styles.gaugeContainer}>
-                  <CircularGauge value={sizeParts.value} unit={sizeParts.unit} size={210} strokeWidth={12} />
+                  <CircularGauge value={sizeParts.value} unit={sizeParts.unit} size={96} strokeWidth={7} />
                 </View>
 
                 <Text style={styles.heroDescription}>
@@ -402,26 +483,32 @@ export const DashboardScreen: React.FC<Props> = ({ onSmartClean, onNavigate, onF
                 </Text>
 
                 {/* Integrated Smart Clean Button inside Recoverable Storage Card */}
-                <GlassButton 
-                  style={styles.heroCleanButton} 
+                <GlassButton
+                  style={styles.heroCleanButton}
                   borderRadius={28}
-                  borderColor={totalRecoverableCount === 0 ? colors.whiteBorderLight : 'rgba(147, 51, 234, 0.4)'}
-                  glowColor={colors.neonCyan}
-                  onPress={handleSmartClean} 
+                  borderColor={
+                    totalRecoverableCount === 0 ? colors.border : alpha(colors.primary, 0.4)
+                  }
+                  glowColor={colors.primary}
+                  onPress={handleSmartClean}
                   disabled={totalRecoverableCount === 0}
                 >
                   <LinearGradient
                     colors={
-                      totalRecoverableCount === 0 
-                        ? ['rgba(241, 245, 249, 0.5)', 'rgba(241, 245, 249, 0.3)'] 
-                        : ['rgba(147, 51, 234, 0.15)', 'rgba(217, 70, 239, 0.15)']
+                      totalRecoverableCount === 0
+                        ? ['rgba(241, 245, 249, 0.5)', 'rgba(241, 245, 249, 0.3)']
+                        : [alpha(colors.primary, 0.12), alpha(colors.accent, 0.12)]
                     }
                     start={{ x: 0, y: 0 }}
                     end={{ x: 1, y: 1 }}
                     style={StyleSheet.absoluteFill}
                   />
                   <View style={styles.buttonInner}>
-                    <Sparkles color={totalRecoverableCount === 0 ? colors.textMuted : colors.neonCyan} size={18} style={styles.buttonIcon} />
+                    <Sparkles
+                      color={totalRecoverableCount === 0 ? colors.textMuted : colors.primary}
+                      size={18}
+                      style={styles.buttonIcon}
+                    />
                     <Text style={[styles.cleanButtonText, totalRecoverableCount === 0 && { color: colors.textMuted }]}>
                       {t('dashboard.action.smart_clean')} ({totalRecoverableCount})
                     </Text>
@@ -430,9 +517,11 @@ export const DashboardScreen: React.FC<Props> = ({ onSmartClean, onNavigate, onF
               </GlassPanel>
             </Animated.View>
 
+            <AdBanner placement="clean_hero" />
+
             {/* Android 14/15 Limited Gallery Access Warning Banner */}
             {isLimitedAccess && (
-              <Animated.View entering={FadeInDown.duration(400)} style={styles.limitedBannerContainer}>
+              <Animated.View entering={enter(FadeInDown.duration(400))} style={styles.limitedBannerContainer}>
                 <TouchableOpacity
                   activeOpacity={0.88}
                   onPress={() => {
@@ -442,7 +531,7 @@ export const DashboardScreen: React.FC<Props> = ({ onSmartClean, onNavigate, onF
                 >
                   <GlassPanel
                     borderRadius={22}
-                    borderColor="rgba(245, 158, 11, 0.45)"
+                    borderColor={alpha(colors.warningAmber, 0.4)}
                     style={styles.limitedBannerPanel}
                     contentStyle={styles.limitedBannerContent}
                     intensity={35}
@@ -471,20 +560,18 @@ export const DashboardScreen: React.FC<Props> = ({ onSmartClean, onNavigate, onF
             <View style={styles.bentoGridSection}>
               <View style={styles.bentoRow}>
                 <BentoCard
-                  icon={<Copy color={colors.deepPurple} size={22} strokeWidth={2.4} />}
+                  icon={<Copy color={colors.primaryDeep} size={21} strokeWidth={2.2} />}
                   title={t('dashboard.bento.exact_duplicates')}
                   countText={t('dashboard.status.items_found', { count: exactDuplicatesFlat.length })}
-                  accentColor={colors.deepPurple}
-                  glowColor="rgba(126, 34, 206, 0.15)"
+                  accentColor={colors.primaryDeep}
                   onPress={() => scanResult && onSmartClean(exactDuplicatesFlat, t('dashboard.bento.exact_duplicates'), scanResult.exactDuplicates)}
                   delay={150}
                 />
                 <BentoCard
-                  icon={<Waves color={colors.neonCyan} size={22} strokeWidth={2.4} />}
+                  icon={<Waves color={colors.primary} size={21} strokeWidth={2.2} />}
                   title={t('dashboard.bento.similar_shots')}
                   countText={t('dashboard.status.items_found', { count: similarPhotosFlat.length })}
-                  accentColor={colors.neonCyan}
-                  glowColor="rgba(147, 51, 234, 0.15)"
+                  accentColor={colors.primary}
                   onPress={() => onSmartClean(similarPhotosFlat, t('dashboard.bento.similar_shots'), scanResult?.similarPhotos)}
                   delay={250}
                 />
@@ -492,25 +579,26 @@ export const DashboardScreen: React.FC<Props> = ({ onSmartClean, onNavigate, onF
 
               <View style={styles.bentoRow}>
                 <BentoCard
-                  icon={<ImageOff color={colors.electricPurple} size={22} strokeWidth={2.4} />}
+                  icon={<ImageOff color={colors.accent} size={21} strokeWidth={2.2} />}
                   title={t('dashboard.bento.blurry_photos')}
                   countText={t('dashboard.status.items_found', { count: scanResult?.blurryPhotos.length || 0 })}
-                  accentColor={colors.electricPurple}
-                  glowColor="rgba(217, 70, 239, 0.15)"
+                  accentColor={colors.accent}
                   onPress={() => scanResult && onSmartClean(scanResult.blurryPhotos, t('dashboard.bento.blurry_photos'))}
                   delay={350}
                 />
                 <BentoCard
-                  icon={<Zap color={colors.successMint} size={22} strokeWidth={2.4} />}
+                  icon={<Zap color={colors.successMint} size={21} strokeWidth={2.2} />}
                   title={t('dashboard.bento.screenshots')}
                   countText={t('dashboard.status.items_found', { count: scanResult?.screenshots.length || 0 })}
                   accentColor={colors.successMint}
-                  glowColor="rgba(16, 185, 129, 0.15)"
                   onPress={() => scanResult && onSmartClean(scanResult.screenshots, t('dashboard.bento.screenshots'))}
                   delay={450}
                 />
               </View>
             </View>
+
+            <CategoryShortcuts onOpen={(assets, title) => onSmartClean(assets, title)} />
+
           </ScrollView>
         )}
 
@@ -535,79 +623,28 @@ export const DashboardScreen: React.FC<Props> = ({ onSmartClean, onNavigate, onF
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: colors.oledBlack,
+    backgroundColor: colors.canvas,
+  },
+  backgroundScanBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'center',
+    gap: 8,
+    paddingVertical: 7,
+    paddingHorizontal: 16,
+    borderRadius: radius.pill,
+    backgroundColor: alpha(colors.primary, 0.1),
+    borderWidth: 1,
+    borderColor: alpha(colors.primary, 0.25),
+    marginVertical: 8,
+  },
+  backgroundScanText: {
+    fontSize: 12.5,
+    fontWeight: '700',
+    color: colors.primary,
   },
   safeArea: {
     flex: 1,
-  },
-  bgOrb1: {
-    position: 'absolute',
-    top: -60,
-    right: -60,
-    width: 340,
-    height: 340,
-    borderRadius: 170,
-    opacity: 0.55,
-  },
-  bgOrb2: {
-    position: 'absolute',
-    top: 240,
-    left: -80,
-    width: 300,
-    height: 300,
-    borderRadius: 150,
-    opacity: 0.35,
-  },
-  headerBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  langButton: {
-    height: 38,
-    paddingHorizontal: 12,
-    borderRadius: 14,
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
-    borderWidth: 1,
-    borderColor: 'rgba(0, 242, 254, 0.25)',
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-  },
-  langText: {
-    fontSize: 13,
-    fontWeight: '800',
-    color: colors.neonCyan,
-    letterSpacing: 1,
-  },
-  appTitle: {
-    fontSize: 24,
-    fontWeight: '900',
-    color: colors.neonCyan,
-    letterSpacing: -1,
-    textShadowColor: 'rgba(0, 242, 254, 0.5)',
-    textShadowOffset: { width: 0, height: 0 },
-    textShadowRadius: 15,
-  },
-  headerRightActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  settingsButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 14,
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.1)',
-    alignItems: 'center',
-    justifyContent: 'center',
   },
   scrollView: {
     flex: 1,
@@ -622,44 +659,37 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  loadingOrb: {
-    width: 84,
-    height: 84,
-    marginBottom: 20,
+  retryButton: {
+    width: 'auto',
   },
-  loadingOrbContent: {
-    alignItems: 'center',
-    justifyContent: 'center',
+  retryText: {
+    color: colors.primary,
+    fontSize: 13.5,
+    fontWeight: '800',
+    marginLeft: 7,
   },
-  loadingText: {
-    color: colors.textSecondary,
-    fontSize: 16,
-    fontWeight: '600',
-  },
-  errorText: {
-    color: colors.dangerRose,
-    fontSize: 16,
-    fontWeight: '600',
+  scanAdBanner: {
+    marginVertical: 14,
   },
   heroSection: {
-    borderRadius: 32,
-    marginBottom: 20,
+    borderRadius: 24,
+    marginBottom: 10,
   },
   heroContent: {
     alignItems: 'center',
-    paddingVertical: 24,
-    paddingHorizontal: 20,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
   },
   heroEyebrow: {
     fontSize: 12,
     fontWeight: '700',
     color: colors.textSecondary,
     textTransform: 'uppercase',
-    letterSpacing: 2.5,
-    marginBottom: 20,
+    letterSpacing: 2,
+    marginBottom: 10,
   },
   gaugeContainer: {
-    marginBottom: 20,
+    marginBottom: 10,
   },
   heroDescription: {
     fontSize: 14,
@@ -675,7 +705,7 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: 260,
     borderRadius: 26,
-    shadowColor: colors.neonCyan,
+    shadowColor: colors.primary,
     shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.2,
     shadowRadius: 14,
@@ -691,16 +721,8 @@ const styles = StyleSheet.create({
   bentoWrapper: {
     flex: 1,
   },
-  bentoFullWidth: {
-    width: '100%',
-  },
   bentoItem: {
     borderRadius: 24,
-  },
-  bentoContentRow: {
-    padding: 18,
-    flexDirection: 'row',
-    alignItems: 'center',
   },
   bentoContentColumn: {
     padding: 16,
@@ -727,7 +749,7 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   bentoCountColumn: {
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: '700',
     textTransform: 'uppercase',
     letterSpacing: 1.2,
@@ -741,44 +763,6 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     marginRight: 12,
   },
-  bentoTextGroup: {
-    flex: 1,
-  },
-  bentoTitle: {
-    fontSize: 14,
-    fontWeight: '800',
-    color: colors.textPrimary,
-    marginBottom: 3,
-  },
-  bentoCount: {
-    fontSize: 11,
-    fontWeight: '700',
-    textTransform: 'uppercase',
-    letterSpacing: 1.2,
-  },
-  chevronWrapper: {
-    paddingLeft: 8,
-  },
-  floatingActionWrapper: {
-    position: 'absolute',
-    bottom: 96,
-    left: 0,
-    right: 0,
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 40,
-    paddingHorizontal: 24,
-  },
-  cleanButton: {
-    height: 56,
-    width: 220,
-    borderRadius: 28,
-    shadowColor: colors.neonCyan,
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.35,
-    shadowRadius: 20,
-    elevation: 10,
-  },
   buttonInner: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -789,8 +773,8 @@ const styles = StyleSheet.create({
     marginRight: 8,
   },
   cleanButtonText: {
-    fontSize: 16,
-    color: colors.neonCyan,
+    fontSize: 15.5,
+    color: colors.primary,
     fontWeight: '900',
     letterSpacing: 0.8,
   },
@@ -824,23 +808,6 @@ const styles = StyleSheet.create({
     marginBottom: 16,
     lineHeight: 22,
   },
-  scannerProgressTrack: {
-    width: '100%',
-    height: 6,
-    backgroundColor: 'rgba(255, 255, 255, 0.08)',
-    borderRadius: 3,
-    overflow: 'hidden',
-    marginBottom: 20,
-  },
-  scannerProgressFill: {
-    height: '100%',
-    backgroundColor: colors.neonCyan,
-    borderRadius: 3,
-    shadowColor: colors.neonCyan,
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.8,
-    shadowRadius: 6,
-  },
   scannerBadgesRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -851,8 +818,8 @@ const styles = StyleSheet.create({
   scannerBadgePill: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(0, 242, 254, 0.12)',
-    borderColor: 'rgba(0, 242, 254, 0.3)',
+    backgroundColor: alpha(colors.primary, 0.1),
+    borderColor: alpha(colors.primary, 0.25),
     borderWidth: 1,
     paddingHorizontal: 12,
     paddingVertical: 7,
@@ -861,15 +828,15 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   scannerBadgeText: {
-    color: colors.neonCyan,
-    fontSize: 11,
+    color: colors.primary,
+    fontSize: 13,
     fontWeight: '700',
   },
   scannerBadgePillSecondary: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    borderColor: colors.whiteBorderLight,
+    backgroundColor: colors.surfaceSunken,
+    borderColor: colors.border,
     borderWidth: 1,
     paddingHorizontal: 12,
     paddingVertical: 7,
@@ -878,7 +845,7 @@ const styles = StyleSheet.create({
   },
   scannerBadgeSecondaryText: {
     color: colors.textSecondary,
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: '600',
   },
   limitedBannerContainer: {
@@ -903,9 +870,9 @@ const styles = StyleSheet.create({
     width: 38,
     height: 38,
     borderRadius: 14,
-    backgroundColor: 'rgba(245, 158, 11, 0.15)',
+    backgroundColor: alpha(colors.warningAmber, 0.12),
     borderWidth: 1,
-    borderColor: 'rgba(245, 158, 11, 0.4)',
+    borderColor: alpha(colors.warningAmber, 0.3),
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: 12,
@@ -920,7 +887,7 @@ const styles = StyleSheet.create({
     marginBottom: 2,
   },
   limitedBannerDesc: {
-    fontSize: 11,
+    fontSize: 13,
     color: colors.textSecondary,
     lineHeight: 15,
   },

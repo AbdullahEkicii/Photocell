@@ -1,20 +1,15 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { enter } from '../theme/motion';
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
-import Animated, { FadeInDown, FadeInUp } from 'react-native-reanimated';
-import { LinearGradient } from 'expo-linear-gradient';
+import Animated, { FadeInDown } from 'react-native-reanimated';
 import {
-  Globe,
-  Settings,
   Sparkles,
-  Zap,
   ShieldCheck,
-  Film,
   Images,
   BarChart2,
-  ArrowRight,
-  RefreshCw,
+  Calendar,
   Layers,
   HelpCircle,
   AlertTriangle,
@@ -25,26 +20,30 @@ import * as Haptics from 'expo-haptics';
 import { AtmosphericBackground } from '../components/glass/AtmosphericBackground';
 import { GlassPanel } from '../components/glass/GlassPanel';
 import { GlassButton } from '../components/glass/GlassButton';
+import { ScreenHeader, HeaderIconButton, HEADER_BAR_HEIGHT, underHeader } from '../components/layout/ScreenHeader';
+import { AdBanner } from '../components/ads/AdBanner';
+import { NavCard } from '../components/layout/NavCard';
 import { SettingsModal } from '../components/settings/SettingsModal';
 import { StorageHealthWidget } from '../components/dashboard/StorageHealthWidget';
+import { ProgressCard } from '../components/progress/ProgressCard';
 import { OnboardingGuideModal } from '../components/guide/OnboardingGuideModal';
 import { PermissionGuidanceModal } from '../components/PermissionGuidanceModal';
-import { colors } from '../theme/colors';
+import { colors, alpha, radius } from '../theme/colors';
 import { TabType } from '../components/navigation/BottomNavBar';
 import { getStoredStats, formatByteSize } from '../services/cacheCleaner';
 import { checkMediaPermissionsStatus } from '../services/mediaScanner';
 
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
-
 interface Props {
   onNavigate: (tab: TabType) => void;
+  /** Report is a sub-screen of Home, not a tab. */
+  onOpenReport: () => void;
   onFullscreenToggle?: (enabled: boolean) => void;
 }
 
-export const HomeScreen: React.FC<Props> = ({ onNavigate, onFullscreenToggle }) => {
-  const { t, i18n } = useTranslation();
+export const HomeScreen: React.FC<Props> = ({ onNavigate, onOpenReport, onFullscreenToggle }) => {
+  const { t } = useTranslation();
   const insets = useSafeAreaInsets();
-  const [lifetimeSaved, setLifetimeSaved] = useState<string>('3.2 GB');
+  const [lifetimeSavedBytes, setLifetimeSavedBytes] = useState<number>(0);
   const [settingsVisible, setSettingsVisible] = useState<boolean>(false);
   const [guideVisible, setGuideVisible] = useState<boolean>(false);
   const [permissionModalVisible, setPermissionModalVisible] = useState<boolean>(false);
@@ -52,19 +51,11 @@ export const HomeScreen: React.FC<Props> = ({ onNavigate, onFullscreenToggle }) 
 
   const loadStats = useCallback(() => {
     getStoredStats()
-      .then((stats) => {
-        if (stats?.lifetimeSavedBytes) {
-          setLifetimeSaved(formatByteSize(stats.lifetimeSavedBytes));
-        } else {
-          setLifetimeSaved('0 MB');
-        }
-      })
+      .then((stats) => setLifetimeSavedBytes(stats.lifetimeSavedBytes || 0))
       .catch(() => {});
 
     checkMediaPermissionsStatus()
-      .then((status) => {
-        setIsLimitedAccess(status.isLimited);
-      })
+      .then((status) => setIsLimitedAccess(status.isLimited))
       .catch(() => {});
   }, []);
 
@@ -72,136 +63,145 @@ export const HomeScreen: React.FC<Props> = ({ onNavigate, onFullscreenToggle }) 
     loadStats();
   }, [loadStats]);
 
-  const toggleLanguage = () => {
-    const current = i18n.language || 'tr';
-    const nextLang = current.startsWith('tr') ? 'en' : 'tr';
-    i18n.changeLanguage(nextLang);
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
-  };
-
-  const handleCardPress = (tab: TabType) => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+  const goTo = (tab: TabType) => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
     onNavigate(tab);
   };
 
+  const cards: {
+    key: TabType | 'report';
+    icon: React.ComponentType<any>;
+    titleKey: string;
+    descKey: string;
+    accent: string;
+  }[] = [
+    {
+      key: 'photos',
+      icon: Images,
+      titleKey: 'home.card_photos_title',
+      descKey: 'home.card_photos_desc',
+      accent: colors.primary,
+    },
+    {
+      key: 'timeline',
+      icon: Calendar,
+      titleKey: 'home.card_timeline_title',
+      descKey: 'home.card_timeline_desc',
+      accent: colors.accent,
+    },
+    {
+      key: 'tools',
+      icon: Layers,
+      titleKey: 'home.card_tools_title',
+      descKey: 'home.card_tools_desc',
+      accent: colors.primaryDeep,
+    },
+    {
+      key: 'vault',
+      icon: ShieldCheck,
+      titleKey: 'home.card_vault_title',
+      descKey: 'home.card_vault_desc',
+      accent: colors.successMint,
+    },
+    {
+      key: 'report',
+      icon: BarChart2,
+      titleKey: 'home.card_report_title',
+      descKey: 'home.card_report_desc',
+      accent: colors.warningAmber,
+    },
+  ];
+
   return (
     <View style={styles.container}>
-      {/* Dynamic Animated Mesh Shader Background */}
       <AtmosphericBackground />
 
       <SafeAreaView style={styles.safeArea} edges={['top']}>
-        {/* Top Header Bar */}
-        <Animated.View entering={FadeInDown.duration(500)} style={styles.headerBar}>
-          <TouchableOpacity activeOpacity={0.8} onPress={toggleLanguage} style={styles.langButton}>
-            <Globe color={colors.neonCyan} size={18} strokeWidth={2.4} />
-            <Text style={styles.langText}>
-              {(i18n.language || 'tr').startsWith('tr') ? 'TR' : 'EN'}
-            </Text>
-          </TouchableOpacity>
-
-          <Text style={styles.appTitle}>{t('dashboard.app_title', 'FotoSil')}</Text>
-
-          <View style={styles.headerRightActions}>
-            <TouchableOpacity
-              activeOpacity={0.8}
-              onPress={() => {
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
-                setGuideVisible(true);
-              }}
-              style={styles.settingsButton}
-            >
-              <HelpCircle color={colors.electricPurple} size={20} strokeWidth={2.4} />
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              activeOpacity={0.8}
-              onPress={() => {
-                Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
-                setSettingsVisible(true);
-              }}
-              style={styles.settingsButton}
-            >
-              <Settings color={colors.neonCyan} size={20} strokeWidth={2.4} />
-            </TouchableOpacity>
-          </View>
-        </Animated.View>
+        <ScreenHeader
+          title={t('dashboard.app_title')}
+          showLanguageToggle
+          onOpenSettings={() => setSettingsVisible(true)}
+          rightSlot={
+            <HeaderIconButton onPress={() => setGuideVisible(true)} accessibilityLabel="Help">
+              <HelpCircle color={colors.textSecondary} size={19} strokeWidth={2.3} />
+            </HeaderIconButton>
+          }
+        />
 
         <ScrollView
-          style={styles.scrollView}
+          style={[styles.scrollView, underHeader]}
           contentContainerStyle={[
             styles.scrollContent,
+            { paddingTop: HEADER_BAR_HEIGHT + 8 },
             { paddingBottom: Math.max(140, 110 + insets.bottom) },
           ]}
           showsVerticalScrollIndicator={false}
         >
-          {/* Hero Banner Section */}
-          <Animated.View entering={FadeInDown.duration(600).delay(100)} style={styles.heroSection}>
+          {/* Hero */}
+          <Animated.View entering={enter(FadeInDown.duration(500).delay(60))} style={styles.heroSection}>
             <GlassPanel
-              borderRadius={32}
-              style={styles.heroPanel}
+              borderRadius={radius.sheet}
               contentStyle={styles.heroContent}
-              intensity={35}
-              glowAccent={colors.neonCyan}
+              intensity={32}
+              glowAccent={colors.primary}
             >
               <View style={styles.heroBadgeRow}>
                 <View style={styles.heroBadge}>
-                  <Zap color={colors.neonCyan} size={14} style={{ marginRight: 6 }} />
                   <Text style={styles.heroBadgeText}>{t('home.hero_badge')}</Text>
                 </View>
-                {lifetimeSaved ? (
+                {lifetimeSavedBytes > 0 && (
                   <View style={styles.heroStatsBadge}>
-                    <Sparkles color={colors.successMint} size={13} style={{ marginRight: 5 }} />
-                    <Text style={styles.heroStatsBadgeText}>{lifetimeSaved}</Text>
+                    <Sparkles color={colors.successMint} size={12} />
+                    <Text style={styles.heroStatsBadgeText}>
+                      {formatByteSize(lifetimeSavedBytes)}
+                    </Text>
                   </View>
-                ) : null}
+                )}
               </View>
 
               <Text style={styles.heroTitle}>{t('home.hero_title')}</Text>
               <Text style={styles.heroDesc}>{t('home.hero_desc')}</Text>
 
               <GlassButton
-                borderRadius={28}
-                borderColor={colors.neonCyan}
-                style={styles.heroCtaButton}
-                contentStyle={styles.heroCtaContent}
-                onPress={() => handleCardPress('photos')}
+                borderRadius={radius.control}
+                borderColor={alpha(colors.primary, 0.35)}
+                style={styles.heroCta}
+                onPress={() => goTo('photos')}
               >
-                <Sparkles color={colors.neonCyan} size={20} style={{ marginRight: 8 }} />
+                <Sparkles color={colors.primary} size={18} />
                 <Text style={styles.heroCtaText}>{t('home.cta_quick')}</Text>
               </GlassButton>
             </GlassPanel>
           </Animated.View>
 
-          {/* Android 14/15 Limited Gallery Access Warning Banner */}
+          {/* Limited gallery access warning (Android 14/15) */}
           {isLimitedAccess && (
-            <Animated.View entering={FadeInDown.duration(500)} style={styles.limitedBannerContainer}>
+            <Animated.View entering={enter(FadeInDown.duration(400))} style={styles.limitedBanner}>
               <TouchableOpacity
-                activeOpacity={0.88}
+                activeOpacity={0.85}
+                accessibilityRole="button"
                 onPress={() => {
                   Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
                   setPermissionModalVisible(true);
                 }}
               >
                 <GlassPanel
-                  borderRadius={22}
-                  borderColor="rgba(245, 158, 11, 0.45)"
-                  style={styles.limitedBannerPanel}
+                  borderRadius={radius.card}
+                  borderColor={alpha(colors.warningAmber, 0.4)}
                   contentStyle={styles.limitedBannerContent}
-                  intensity={35}
+                  intensity={30}
                   glowAccent={colors.warningAmber}
                 >
-                  <View style={styles.limitedBannerLeft}>
-                    <View style={styles.limitedBannerIconBox}>
-                      <AlertTriangle color={colors.warningAmber} size={20} />
-                    </View>
-                    <View style={styles.limitedBannerTextCol}>
-                      <Text style={styles.limitedBannerTitle}>
-                        {t('permission.limited_banner_title', 'Sınırlı Galeri Erişimi Aktif')}
-                      </Text>
-                      <Text style={styles.limitedBannerDesc} numberOfLines={2}>
-                        {t('permission.limited_banner_desc', 'Android 14/15 sınırlı moddasınız. Tüm galeriyi taramak için dokunun.')}
-                      </Text>
-                    </View>
+                  <View style={styles.limitedBannerIcon}>
+                    <AlertTriangle color={colors.warningAmber} size={18} />
+                  </View>
+                  <View style={styles.limitedBannerText}>
+                    <Text style={styles.limitedBannerTitle}>
+                      {t('permission.limited_banner_title')}
+                    </Text>
+                    <Text style={styles.limitedBannerDesc} numberOfLines={2}>
+                      {t('permission.limited_banner_desc')}
+                    </Text>
                   </View>
                   <ChevronRight color={colors.warningAmber} size={18} />
                 </GlassPanel>
@@ -209,150 +209,31 @@ export const HomeScreen: React.FC<Props> = ({ onNavigate, onFullscreenToggle }) 
             </Animated.View>
           )}
 
-          {/* Live Storage Health & RAM Turbo Boost Widget */}
+          <View style={styles.homeAdWrap}>
+            <AdBanner placement="home" style={styles.homeAdBanner} />
+          </View>
+
           <StorageHealthWidget />
 
-          {/* Navigation Bento Feature Cards */}
+          <ProgressCard />
+
           <View style={styles.cardsContainer}>
-            {/* Card 1: Resim Temizleme */}
-            <Animated.View entering={FadeInUp.duration(600).delay(200).springify()}>
-              <TouchableOpacity activeOpacity={0.88} onPress={() => handleCardPress('photos')}>
-                <GlassPanel
-                  borderRadius={28}
-                  borderColor="rgba(0, 242, 254, 0.35)"
-                  style={styles.featureCard}
-                  contentStyle={styles.featureCardContent}
-                  glowAccent={colors.neonCyan}
-                  intensity={30}
-                >
-                  <View style={[styles.iconBadge, { backgroundColor: 'rgba(0, 242, 254, 0.12)', borderColor: 'rgba(0, 242, 254, 0.35)' }]}>
-                    <Images color={colors.neonCyan} size={26} strokeWidth={2.4} />
-                  </View>
-
-                  <View style={styles.cardTextGroup}>
-                    <Text style={styles.cardTitle}>{t('home.card_photos_title')}</Text>
-                    <Text style={styles.cardDesc}>{t('home.card_photos_desc')}</Text>
-                  </View>
-
-                  <View style={styles.arrowCircle}>
-                    <ArrowRight color={colors.neonCyan} size={18} strokeWidth={2.5} />
-                  </View>
-                </GlassPanel>
-              </TouchableOpacity>
-            </Animated.View>
-
-            {/* Card 2: Zaman Tüneli Detoksu */}
-            <Animated.View entering={FadeInUp.duration(600).delay(280).springify()}>
-              <TouchableOpacity activeOpacity={0.88} onPress={() => handleCardPress('timeline')}>
-                <GlassPanel
-                  borderRadius={28}
-                  borderColor="rgba(168, 85, 247, 0.35)"
-                  style={styles.featureCard}
-                  contentStyle={styles.featureCardContent}
-                  glowAccent={colors.electricPurple}
-                  intensity={30}
-                >
-                  <View style={[styles.iconBadge, { backgroundColor: 'rgba(168, 85, 247, 0.12)', borderColor: 'rgba(168, 85, 247, 0.35)' }]}>
-                    <Images color={colors.electricPurple} size={26} strokeWidth={2.4} />
-                  </View>
-
-                  <View style={styles.cardTextGroup}>
-                    <Text style={styles.cardTitle}>{t('home.card_timeline_title')}</Text>
-                    <Text style={styles.cardDesc}>{t('home.card_timeline_desc')}</Text>
-                  </View>
-
-                  <View style={[styles.arrowCircle, { borderColor: 'rgba(168, 85, 247, 0.4)' }]}>
-                    <ArrowRight color={colors.electricPurple} size={18} strokeWidth={2.5} />
-                  </View>
-                </GlassPanel>
-              </TouchableOpacity>
-            </Animated.View>
-
-            {/* Card 3: Medya Araç Seti */}
-            <Animated.View entering={FadeInUp.duration(600).delay(360).springify()}>
-              <TouchableOpacity activeOpacity={0.88} onPress={() => handleCardPress('tools')}>
-                <GlassPanel
-                  borderRadius={28}
-                  borderColor="rgba(126, 34, 206, 0.35)"
-                  style={styles.featureCard}
-                  contentStyle={styles.featureCardContent}
-                  glowAccent={colors.deepPurple}
-                  intensity={30}
-                >
-                  <View style={[styles.iconBadge, { backgroundColor: 'rgba(126, 34, 206, 0.12)', borderColor: 'rgba(126, 34, 206, 0.35)' }]}>
-                    <Layers color={colors.deepPurple} size={26} strokeWidth={2.4} />
-                  </View>
-
-                  <View style={styles.cardTextGroup}>
-                    <Text style={styles.cardTitle}>{t('home.card_tools_title')}</Text>
-                    <Text style={styles.cardDesc}>{t('home.card_tools_desc')}</Text>
-                  </View>
-
-                  <View style={[styles.arrowCircle, { borderColor: 'rgba(126, 34, 206, 0.4)' }]}>
-                    <ArrowRight color={colors.deepPurple} size={18} strokeWidth={2.5} />
-                  </View>
-                </GlassPanel>
-              </TouchableOpacity>
-            </Animated.View>
-
-            {/* Card 4: Güvenli Gizli Kasa */}
-            <Animated.View entering={FadeInUp.duration(600).delay(440).springify()}>
-              <TouchableOpacity activeOpacity={0.88} onPress={() => handleCardPress('vault')}>
-                <GlassPanel
-                  borderRadius={28}
-                  borderColor="rgba(16, 185, 129, 0.35)"
-                  style={styles.featureCard}
-                  contentStyle={styles.featureCardContent}
-                  glowAccent={colors.successMint}
-                  intensity={30}
-                >
-                  <View style={[styles.iconBadge, { backgroundColor: 'rgba(16, 185, 129, 0.12)', borderColor: 'rgba(16, 185, 129, 0.35)' }]}>
-                    <Sparkles color={colors.successMint} size={26} strokeWidth={2.4} />
-                  </View>
-
-                  <View style={styles.cardTextGroup}>
-                    <Text style={styles.cardTitle}>{t('home.card_vault_title')}</Text>
-                    <Text style={styles.cardDesc}>{t('home.card_vault_desc')}</Text>
-                  </View>
-
-                  <View style={[styles.arrowCircle, { borderColor: 'rgba(16, 185, 129, 0.4)' }]}>
-                    <ArrowRight color={colors.successMint} size={18} strokeWidth={2.5} />
-                  </View>
-                </GlassPanel>
-              </TouchableOpacity>
-            </Animated.View>
-
-            {/* Card 5: Temizlik Raporu */}
-            <Animated.View entering={FadeInUp.duration(600).delay(520).springify()}>
-              <TouchableOpacity activeOpacity={0.88} onPress={() => handleCardPress('report')}>
-                <GlassPanel
-                  borderRadius={28}
-                  borderColor="rgba(245, 158, 11, 0.35)"
-                  style={styles.featureCard}
-                  contentStyle={styles.featureCardContent}
-                  glowAccent={colors.warningAmber}
-                  intensity={30}
-                >
-                  <View style={[styles.iconBadge, { backgroundColor: 'rgba(245, 158, 11, 0.12)', borderColor: 'rgba(245, 158, 11, 0.35)' }]}>
-                    <BarChart2 color={colors.warningAmber} size={26} strokeWidth={2.4} />
-                  </View>
-
-                  <View style={styles.cardTextGroup}>
-                    <Text style={styles.cardTitle}>{t('home.card_report_title')}</Text>
-                    <Text style={styles.cardDesc}>{t('home.card_report_desc')}</Text>
-                  </View>
-
-                  <View style={[styles.arrowCircle, { borderColor: 'rgba(245, 158, 11, 0.4)' }]}>
-                    <ArrowRight color={colors.warningAmber} size={18} strokeWidth={2.5} />
-                  </View>
-                </GlassPanel>
-              </TouchableOpacity>
-            </Animated.View>
+            {cards.map((card, index) => (
+              <NavCard
+                key={card.key}
+                icon={card.icon}
+                title={t(card.titleKey)}
+                description={t(card.descKey)}
+                accent={card.accent}
+                delay={120 + index * 60}
+                onPress={() => (card.key === 'report' ? onOpenReport() : goTo(card.key))}
+              />
+            ))}
           </View>
+
         </ScrollView>
       </SafeAreaView>
 
-      {/* Settings Modal */}
       <SettingsModal
         visible={settingsVisible}
         onClose={() => setSettingsVisible(false)}
@@ -361,13 +242,8 @@ export const HomeScreen: React.FC<Props> = ({ onNavigate, onFullscreenToggle }) 
         onFullscreenChange={onFullscreenToggle}
       />
 
-      {/* Interactive Onboarding & User Guide Modal */}
-      <OnboardingGuideModal
-        visible={guideVisible}
-        onClose={() => setGuideVisible(false)}
-      />
+      <OnboardingGuideModal visible={guideVisible} onClose={() => setGuideVisible(false)} />
 
-      {/* Android 14/15 Permission Guidance Modal */}
       <PermissionGuidanceModal
         visible={permissionModalVisible}
         onClose={() => {
@@ -382,73 +258,23 @@ export const HomeScreen: React.FC<Props> = ({ onNavigate, onFullscreenToggle }) 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: colors.oledBlack,
+    backgroundColor: colors.canvas,
   },
   safeArea: {
     flex: 1,
-  },
-  headerBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: colors.whiteBorderLight,
-  },
-  headerRightActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-  },
-  langButton: {
-    height: 38,
-    paddingHorizontal: 12,
-    borderRadius: 14,
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
-    borderWidth: 1,
-    borderColor: colors.whiteBorderLight,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-  },
-  langText: {
-    color: colors.neonCyan,
-    fontSize: 12,
-    fontWeight: '800',
-    letterSpacing: 0.5,
-  },
-  appTitle: {
-    fontSize: 22,
-    fontWeight: '900',
-    color: colors.textPrimary,
-    letterSpacing: 1,
-  },
-  settingsButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 14,
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
-    borderWidth: 1,
-    borderColor: colors.whiteBorderLight,
-    alignItems: 'center',
-    justifyContent: 'center',
   },
   scrollView: {
     flex: 1,
   },
   scrollContent: {
-    paddingHorizontal: 20,
     paddingTop: 16,
   },
   heroSection: {
+    marginHorizontal: 20,
     marginBottom: 16,
   },
-  heroPanel: {
-    borderRadius: 32,
-  },
   heroContent: {
-    padding: 24,
+    padding: 22,
   },
   heroBadgeRow: {
     flexDirection: 'row',
@@ -457,43 +283,42 @@ const styles = StyleSheet.create({
     marginBottom: 14,
   },
   heroBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: 'rgba(0, 242, 254, 0.12)',
+    backgroundColor: alpha(colors.primary, 0.09),
     borderWidth: 1,
-    borderColor: 'rgba(0, 242, 254, 0.3)',
+    borderColor: alpha(colors.primary, 0.22),
     paddingHorizontal: 10,
     paddingVertical: 5,
-    borderRadius: 12,
+    borderRadius: 10,
   },
   heroBadgeText: {
-    color: colors.neonCyan,
-    fontSize: 10,
+    color: colors.primary,
+    fontSize: 13,
     fontWeight: '800',
-    letterSpacing: 0.5,
+    letterSpacing: 0.8,
   },
   heroStatsBadge: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(16, 185, 129, 0.12)',
+    gap: 5,
+    backgroundColor: alpha(colors.successMint, 0.09),
     borderWidth: 1,
-    borderColor: 'rgba(16, 185, 129, 0.3)',
+    borderColor: alpha(colors.successMint, 0.24),
     paddingHorizontal: 10,
     paddingVertical: 5,
-    borderRadius: 12,
+    borderRadius: 10,
   },
   heroStatsBadgeText: {
     color: colors.successMint,
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: '800',
   },
   heroTitle: {
-    fontSize: 24,
+    fontSize: 23,
     fontWeight: '900',
     color: colors.textPrimary,
-    lineHeight: 30,
+    lineHeight: 29,
     marginBottom: 8,
-    letterSpacing: -0.5,
+    letterSpacing: -0.6,
   },
   heroDesc: {
     fontSize: 13,
@@ -501,52 +326,38 @@ const styles = StyleSheet.create({
     lineHeight: 19,
     marginBottom: 20,
   },
-  heroCtaButton: {
-    borderRadius: 28,
-  },
-  heroCtaContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 14,
+  heroCta: {
+    borderRadius: radius.control,
   },
   heroCtaText: {
     fontSize: 15,
     fontWeight: '800',
-    color: colors.neonCyan,
-    letterSpacing: 0.5,
+    color: colors.primary,
+    marginLeft: 8,
   },
-  limitedBannerContainer: {
+  limitedBanner: {
+    marginHorizontal: 20,
     marginBottom: 16,
-  },
-  limitedBannerPanel: {
-    borderRadius: 22,
   },
   limitedBannerContent: {
     padding: 14,
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'space-between',
   },
-  limitedBannerLeft: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginRight: 10,
-  },
-  limitedBannerIconBox: {
-    width: 38,
-    height: 38,
-    borderRadius: 14,
-    backgroundColor: 'rgba(245, 158, 11, 0.15)',
+  limitedBannerIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 13,
+    backgroundColor: alpha(colors.warningAmber, 0.12),
     borderWidth: 1,
-    borderColor: 'rgba(245, 158, 11, 0.4)',
+    borderColor: alpha(colors.warningAmber, 0.3),
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: 12,
   },
-  limitedBannerTextCol: {
+  limitedBannerText: {
     flex: 1,
+    marginRight: 8,
   },
   limitedBannerTitle: {
     fontSize: 13,
@@ -555,53 +366,23 @@ const styles = StyleSheet.create({
     marginBottom: 2,
   },
   limitedBannerDesc: {
-    fontSize: 11,
+    fontSize: 13.5,
     color: colors.textSecondary,
     lineHeight: 15,
   },
-  cardsContainer: {
-    gap: 16,
-  },
-  featureCard: {
-    borderRadius: 28,
-  },
-  featureCardContent: {
-    padding: 20,
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  iconBadge: {
-    width: 52,
-    height: 52,
-    borderRadius: 18,
-    borderWidth: 1,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 16,
-  },
-  cardTextGroup: {
-    flex: 1,
-    paddingRight: 8,
-  },
-  cardTitle: {
-    fontSize: 17,
-    fontWeight: '800',
-    color: colors.textPrimary,
+  homeAdWrap: {
+    // Same 20 px side inset as the hero card above it. Negative top margin pulls it
+    // closer to the hero card; the bottom margin sets the gap to the next card.
+    marginHorizontal: 20,
+    marginTop: -8,
     marginBottom: 4,
   },
-  cardDesc: {
-    fontSize: 13,
-    color: colors.textSecondary,
-    lineHeight: 18,
+  homeAdBanner: {
+    marginVertical: 0,
+    paddingVertical: 4,
   },
-  arrowCircle: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: 'rgba(255, 255, 255, 0.04)',
-    borderWidth: 1,
-    borderColor: 'rgba(0, 242, 254, 0.4)',
-    alignItems: 'center',
-    justifyContent: 'center',
+  cardsContainer: {
+    paddingHorizontal: 20,
+    gap: 12,
   },
 });

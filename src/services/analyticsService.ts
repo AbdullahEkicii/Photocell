@@ -12,24 +12,39 @@ export type ScreenName =
   | 'contacts_cleaner'
   | 'vault'
   | 'report'
-  | 'reviewer';
+  | 'reviewer'
+  | 'onboarding';
 
 export interface AnalyticsEventParams {
   [key: string]: string | number | boolean | undefined;
 }
 
 /**
- * Safely resolves Firebase Analytics native module if linked and configured.
+ * Firebase Analytics, resolved lazily and optionally. The native module is only linked
+ * in builds made with a google-services.json (see app.config.js); everywhere else the
+ * calls below are no-ops, and a failed call switches Firebase off for the session
+ * instead of throwing into the UI.
  */
-let firebaseAnalyticsModule: any = null;
+let firebaseAnalytics: any = null;
 try {
-  const mod = require('@react-native-firebase/analytics');
-  if (mod && (mod.default || mod)) {
-    firebaseAnalyticsModule = mod.default ? mod.default() : mod();
-  }
+  firebaseAnalytics = require('@react-native-firebase/analytics');
 } catch {
-  // Graceful fallback for development / environments without google-services.json
+  // Native module not linked in this build.
 }
+
+let firebaseBroken = false;
+const withFirebase = async (fn: (fa: any, instance: any) => Promise<unknown> | unknown) => {
+  if (!firebaseAnalytics || firebaseBroken) return;
+  try {
+    const instance =
+      typeof firebaseAnalytics.getAnalytics === 'function'
+        ? firebaseAnalytics.getAnalytics()
+        : firebaseAnalytics.default();
+    await fn(firebaseAnalytics, instance);
+  } catch {
+    firebaseBroken = true;
+  }
+};
 
 /**
  * In-memory analytics event journal for local auditing and debugging.
@@ -64,12 +79,11 @@ export const AnalyticsService = {
     try {
       pushToJournal(`screen_view_${screenName}`, { screenClass });
 
-      if (firebaseAnalyticsModule?.logScreenView) {
-        await firebaseAnalyticsModule.logScreenView({
-          screen_name: screenName,
-          screen_class: screenClass || screenName,
-        });
-      }
+      await withFirebase((fa, instance) =>
+        fa.logScreenView
+          ? fa.logScreenView(instance, { screen_name: screenName, screen_class: screenClass || screenName })
+          : instance.logScreenView({ screen_name: screenName, screen_class: screenClass || screenName })
+      );
       if (__DEV__) {
         console.log(`[Analytics] 📱 Screen View: ${screenName}`);
       }
@@ -85,9 +99,9 @@ export const AnalyticsService = {
     try {
       pushToJournal(eventName, params);
 
-      if (firebaseAnalyticsModule?.logEvent) {
-        await firebaseAnalyticsModule.logEvent(eventName, params);
-      }
+      await withFirebase((fa, instance) =>
+        fa.logEvent ? fa.logEvent(instance, eventName, params) : instance.logEvent(eventName, params)
+      );
       if (__DEV__) {
         console.log(`[Analytics] ⚡ Event: ${eventName}`, params || '');
       }
@@ -179,7 +193,9 @@ export const AnalyticsService = {
   /**
    * Helper: Track secret vault actions
    */
-  async trackVaultAction(action: 'lock' | 'unlock' | 'restore' | 'delete'): Promise<void> {
+  async trackVaultAction(
+    action: 'lock' | 'unlock' | 'restore' | 'delete' | 'pin_create' | 'pin_change' | 'pin_reset' | 'biometric_unlock'
+  ): Promise<void> {
     return this.logEvent('vault_action', { action });
   },
 
@@ -191,6 +207,28 @@ export const AnalyticsService = {
       setting_key: settingKey,
       new_value: String(value),
     });
+  },
+
+  /** Onboarding funnel: which step people reach and whether they finish. */
+  async trackOnboarding(step: 'started' | 'step_viewed' | 'completed', index?: number): Promise<void> {
+    return this.logEvent(`onboarding_${step}`, index === undefined ? undefined : { step_index: index });
+  },
+
+  /** The outcome of an OS permission request ("granted" | "denied" | "limited" | "blocked"). */
+  async trackPermission(permission: 'gallery' | 'notifications' | 'contacts', result: string): Promise<void> {
+    return this.logEvent('permission_result', { permission, result });
+  },
+
+  async trackLanguageChanged(language: string): Promise<void> {
+    await withFirebase((fa, instance) =>
+      fa.setUserProperty ? fa.setUserProperty(instance, 'app_language', language) : null
+    );
+    return this.logEvent('language_changed', { language });
+  },
+
+  /** Tool usage that has no dedicated helper (exif cleaner, contacts, heavy media...). */
+  async trackToolUsed(tool: string, detail?: AnalyticsEventParams): Promise<void> {
+    return this.logEvent('tool_used', { tool, ...detail });
   },
 
   /**

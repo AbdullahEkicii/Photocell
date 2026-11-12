@@ -1,9 +1,9 @@
 import React, { useCallback } from 'react';
 import { Pressable, PressableProps, StyleSheet, ViewStyle, StyleProp } from 'react-native';
-import Animated, { 
-  useSharedValue, 
-  useAnimatedStyle, 
-  withSpring 
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  withSpring,
 } from 'react-native-reanimated';
 import { LinearGradient } from 'expo-linear-gradient';
 import * as Haptics from 'expo-haptics';
@@ -19,26 +19,29 @@ interface GlassButtonProps extends PressableProps {
   intensity?: number;
   glowColor?: string;
   contentStyle?: StyleProp<ViewStyle>;
+  /** Tighter padding for inline/list buttons that set an explicit height. */
+  compact?: boolean;
 }
 
-export const GlassButton: React.FC<GlassButtonProps> = ({ 
-  children, 
-  onPress, 
-  borderRadius = 32,
-  borderColor = colors.whiteBorder,
+export const GlassButton: React.FC<GlassButtonProps> = ({
+  children,
+  onPress,
+  borderRadius = 24,
+  borderColor = colors.border,
   intensity = 30,
-  glowColor = colors.neonCyan,
+  glowColor = colors.primary,
   contentStyle,
+  compact = false,
   style,
   disabled,
-  ...rest 
+  ...rest
 }) => {
   const scale = useSharedValue(1);
 
   const handlePressIn = useCallback((e: any) => {
     if (disabled) return;
-    scale.value = withSpring(0.95, { damping: 15, stiffness: 400 });
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+    scale.value = withSpring(0.96, { damping: 15, stiffness: 400 });
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
     if (rest.onPressIn) rest.onPressIn(e);
   }, [scale, disabled, rest]);
 
@@ -50,7 +53,7 @@ export const GlassButton: React.FC<GlassButtonProps> = ({
 
   const animatedStyle = useAnimatedStyle(() => ({
     transform: [{ scale: scale.value }],
-    opacity: disabled ? 0.5 : 1,
+    opacity: disabled ? 0.45 : 1,
   }));
 
   return (
@@ -60,25 +63,25 @@ export const GlassButton: React.FC<GlassButtonProps> = ({
       onPressOut={handlePressOut}
       onPress={disabled ? undefined : onPress}
       disabled={disabled}
-      style={[
-        styles.button, 
-        { shadowColor: glowColor }, 
-        style as any, 
-        animatedStyle
-      ]}
+      style={[styles.button, { shadowColor: glowColor }, style as any, animatedStyle]}
     >
-      <GlassPanel 
-        style={styles.panel} 
-        contentStyle={[styles.panelContent, contentStyle]} 
+      <GlassPanel
+        style={styles.panel}
+        contentStyle={[
+          styles.panelContent,
+          compact ? styles.panelContentCompact : null,
+          contentStyle,
+        ]}
         borderRadius={borderRadius}
         borderColor={borderColor}
         intensity={intensity}
       >
         <LinearGradient
-          colors={['rgba(255, 255, 255, 0.15)', 'transparent']}
+          colors={['rgba(255, 255, 255, 0.55)', 'transparent']}
           style={styles.buttonTopGlow}
           start={{ x: 0, y: 0 }}
           end={{ x: 1, y: 0 }}
+          pointerEvents="none"
         />
         {children}
       </GlassPanel>
@@ -90,12 +93,15 @@ const styles = StyleSheet.create({
   button: {
     width: '100%',
     shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.25,
-    shadowRadius: 15,
-    elevation: 8,
+    shadowOpacity: 0.16,
+    shadowRadius: 14,
+    elevation: 6,
   },
   panel: {
     width: '100%',
+    // Fill the pressable so callers that set an explicit height get a panel of
+    // that height rather than one sized purely by its padding.
+    flexGrow: 1,
   },
   buttonTopGlow: {
     position: 'absolute',
@@ -105,9 +111,17 @@ const styles = StyleSheet.create({
     height: 1,
   },
   panelContent: {
-    paddingVertical: 16,
-    paddingHorizontal: 24,
+    flexGrow: 1,
+    // Row by default: nearly every button is an icon followed by a label, and
+    // a column here silently stacks them.
+    flexDirection: 'row',
+    paddingVertical: 14,
+    paddingHorizontal: 20,
     alignItems: 'center',
     justifyContent: 'center',
-  }
+  },
+  panelContentCompact: {
+    paddingVertical: 0,
+    paddingHorizontal: 12,
+  },
 });

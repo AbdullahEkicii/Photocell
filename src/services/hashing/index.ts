@@ -56,6 +56,8 @@ export async function computePerceptualFingerprint(
     const { width, height, data } = decoded;
 
     if (!data || width < 9 || height < 8) return null;
+    // Release decoded base64 string and raw buffer early to free RAM
+    (resized as any).base64 = null;
 
     // Convert to grayscale and compute channel averages
     const gray = new Float32Array(72);
@@ -77,6 +79,7 @@ export async function computePerceptualFingerprint(
       }
     }
 
+    (decoded as any).data = null;
     // Compute 64-bit difference hash (8 rows x 8 adjacent gradient comparisons)
     let hashBits = '';
     for (let row = 0; row < 8; row++) {

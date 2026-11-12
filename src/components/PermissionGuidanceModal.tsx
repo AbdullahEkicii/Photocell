@@ -1,12 +1,12 @@
 import React from 'react';
-import { View, Text, StyleSheet, Modal, TouchableOpacity, Linking, Platform } from 'react-native';
+import { View, Text, StyleSheet, Modal, TouchableOpacity, Linking } from 'react-native';
 import { useTranslation } from 'react-i18next';
-import { ShieldCheck, Lock, AlertTriangle, ChevronRight, X, Sparkles } from 'lucide-react-native';
+import { ShieldCheck, Lock, AlertTriangle, ChevronRight, Sparkles } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 
 import { GlassPanel } from './glass/GlassPanel';
 import { GlassButton } from './glass/GlassButton';
-import { colors } from '../theme/colors';
+import { colors, alpha, radius } from '../theme/colors';
 
 interface Props {
   visible: boolean;
@@ -29,7 +29,8 @@ export const PermissionGuidanceModal: React.FC<Props> = ({ visible, onClose }) =
       <View style={styles.modalOverlay}>
         <GlassPanel
           borderRadius={32}
-          borderColor="rgba(245, 158, 11, 0.4)"
+          borderColor={alpha(colors.warningAmber, 0.35)}
+          fillColor={colors.surface}
           style={styles.modalCard}
           contentStyle={styles.modalContent}
           intensity={45}
@@ -41,7 +42,7 @@ export const PermissionGuidanceModal: React.FC<Props> = ({ visible, onClose }) =
 
           {/* Security Badge */}
           <View style={styles.badgeRow}>
-            <Lock color={colors.neonCyan} size={13} style={{ marginRight: 5 }} />
+            <Lock color={colors.primary} size={13} style={{ marginRight: 5 }} />
             <Text style={styles.badgeText}>{t('permission.limited_alert_badge')}</Text>
           </View>
 
@@ -64,15 +65,15 @@ export const PermissionGuidanceModal: React.FC<Props> = ({ visible, onClose }) =
           <View style={styles.buttonGroup}>
             <GlassButton
               borderRadius={26}
-              borderColor="rgba(0, 242, 254, 0.5)"
-              glowColor={colors.neonCyan}
+              borderColor={alpha(colors.primary, 0.45)}
+              glowColor={colors.primary}
               style={styles.settingsButton}
               onPress={handleOpenSettings}
             >
               <View style={styles.buttonInner}>
-                <Sparkles color={colors.neonCyan} size={18} style={{ marginRight: 8 }} />
+                <Sparkles color={colors.primary} size={18} style={{ marginRight: 8 }} />
                 <Text style={styles.settingsButtonText}>{t('permission.open_settings_btn')}</Text>
-                <ChevronRight color={colors.neonCyan} size={18} style={{ marginLeft: 4 }} />
+                <ChevronRight color={colors.primary} size={18} style={{ marginLeft: 4 }} />
               </View>
             </GlassButton>
 
@@ -89,7 +90,7 @@ export const PermissionGuidanceModal: React.FC<Props> = ({ visible, onClose }) =
 const styles = StyleSheet.create({
   modalOverlay: {
     flex: 1,
-    backgroundColor: 'rgba(3, 7, 18, 0.85)',
+    backgroundColor: colors.scrim,
     alignItems: 'center',
     justifyContent: 'center',
     paddingHorizontal: 20,
@@ -107,9 +108,9 @@ const styles = StyleSheet.create({
     width: 68,
     height: 68,
     borderRadius: 34,
-    backgroundColor: 'rgba(245, 158, 11, 0.15)',
+    backgroundColor: alpha(colors.warningAmber, 0.12),
     borderWidth: 1,
-    borderColor: 'rgba(245, 158, 11, 0.4)',
+    borderColor: alpha(colors.warningAmber, 0.32),
     alignItems: 'center',
     justifyContent: 'center',
     marginBottom: 16,
@@ -121,8 +122,8 @@ const styles = StyleSheet.create({
   badgeRow: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(0, 242, 254, 0.12)',
-    borderColor: 'rgba(0, 242, 254, 0.3)',
+    backgroundColor: alpha(colors.primary, 0.1),
+    borderColor: alpha(colors.primary, 0.26),
     borderWidth: 1,
     paddingHorizontal: 12,
     paddingVertical: 5,
@@ -130,8 +131,8 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
   badgeText: {
-    color: colors.neonCyan,
-    fontSize: 10,
+    color: colors.primary,
+    fontSize: 13,
     fontWeight: '900',
     letterSpacing: 1,
   },
@@ -152,10 +153,10 @@ const styles = StyleSheet.create({
   },
   privacyBox: {
     width: '100%',
-    backgroundColor: 'rgba(16, 185, 129, 0.08)',
-    borderColor: 'rgba(16, 185, 129, 0.3)',
+    backgroundColor: alpha(colors.successMint, 0.08),
+    borderColor: alpha(colors.successMint, 0.26),
     borderWidth: 1,
-    borderRadius: 20,
+    borderRadius: radius.control,
     padding: 14,
     marginBottom: 20,
   },
@@ -166,12 +167,12 @@ const styles = StyleSheet.create({
   },
   privacyTitle: {
     color: colors.successMint,
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '800',
   },
   privacyDesc: {
     color: colors.textSecondary,
-    fontSize: 11,
+    fontSize: 13,
     lineHeight: 16,
     fontWeight: '500',
   },
@@ -187,10 +188,9 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 14,
   },
   settingsButtonText: {
-    color: colors.textPrimary,
+    color: colors.primary,
     fontSize: 14,
     fontWeight: '800',
   },
@@ -200,7 +200,7 @@ const styles = StyleSheet.create({
   },
   dismissButtonText: {
     color: colors.textMuted,
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '600',
   },
 });

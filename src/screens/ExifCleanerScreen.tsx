@@ -1,40 +1,30 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import {
-  View,
-  Text,
-  StyleSheet,
-  TouchableOpacity,
-  ActivityIndicator,
-  Image,
-  Alert,
-} from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { withAdRows } from '../components/ads/adRows';
+import { lastDeniedPermission } from '../services/exifCleaner';
+import { notifyPermissionDenied } from '../services/permissionAlerts';
+import { AdBanner } from '../components/ads/AdBanner';
+import { enter } from '../theme/motion';
+import { AnalyticsService } from '../services/analyticsService';
+import { View, Text, StyleSheet, ActivityIndicator, Image, Alert } from 'react-native';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
-import Animated, { FadeInDown, FadeIn } from 'react-native-reanimated';
-import {
-  ArrowLeft,
-  ShieldCheck,
-  MapPin,
-  Sparkles,
-  Info,
-  Check,
-  EyeOff,
-} from 'lucide-react-native';
+import Animated, { FadeInDown } from 'react-native-reanimated';
+import { ShieldCheck, MapPin, EyeOff, Check } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import { FlashList } from '@shopify/flash-list';
 
 import { AtmosphericBackground } from '../components/glass/AtmosphericBackground';
 import { GlassPanel } from '../components/glass/GlassPanel';
 import { GlassButton } from '../components/glass/GlassButton';
-import { colors } from '../theme/colors';
+import { ScreenHeader } from '../components/layout/ScreenHeader';
+import { EmptyState, LoadingState } from '../components/layout/EmptyState';
+import { colors, alpha, radius } from '../theme/colors';
 import {
   fetchExifCandidates,
   cleanPhotoMetadata,
   saveCleanedPhoto,
   ExifPhotoItem,
 } from '../services/exifCleaner';
-
-import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 interface Props {
   onBack: () => void;
@@ -46,12 +36,15 @@ export const ExifCleanerScreen: React.FC<Props> = ({ onBack }) => {
   const [photos, setPhotos] = useState<ExifPhotoItem[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [processingId, setProcessingId] = useState<string | null>(null);
+  const [cleanedIds, setCleanedIds] = useState<Set<string>>(new Set());
 
   const loadPhotos = useCallback(async () => {
     try {
       setLoading(true);
-      const items = await fetchExifCandidates(40);
+      const items = await fetchExifCandidates(120);
       setPhotos(items);
+      const denied = lastDeniedPermission();
+      if (denied) notifyPermissionDenied(denied);
     } catch (err) {
       console.warn('Failed loading exif candidates:', err);
     } finally {
@@ -69,90 +62,129 @@ export const ExifCleanerScreen: React.FC<Props> = ({ onBack }) => {
 
     try {
       const cleanUri = await cleanPhotoMetadata(item.uri);
-      const success = await saveCleanedPhoto(item.id, cleanUri, false);
+      const outcome = await saveCleanedPhoto(item.id, cleanUri);
       setProcessingId(null);
 
-      if (success) {
+      if (outcome === 'replaced') {
         Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-        Alert.alert(
-          t('general.success'),
-          t('exif_cleaner.clean_success')
-        );
+        // Mark inline so the user can see which photos are already handled
+        // instead of losing that state behind an alert.
+        setCleanedIds((prev) => new Set(prev).add(item.id));
+        AnalyticsService.trackToolUsed('exif_cleaner', { outcome: 'replaced' });
+        Alert.alert(t('general.success'), t('exif_cleaner.clean_success'));
+      } else if (outcome === 'copy_only') {
+        AnalyticsService.trackToolUsed('exif_cleaner', { outcome: 'copy_only' });
+        // The original still has its GPS data, so it must not be shown as cleaned.
+        Alert.alert(t('general.error'), t('exif_cleaner.clean_copy_only'));
+      } else {
+        Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
+        Alert.alert(t('general.error'), t('exif_cleaner.clean_failed'));
       }
     } catch (err) {
       setProcessingId(null);
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
-      Alert.alert(t('general.error'), 'Failed cleaning metadata');
+      Alert.alert(t('general.error'), t('exif_cleaner.clean_failed'));
     }
   };
+
+  const adRows = useMemo(
+    () => withAdRows(photos, (entry) => entry.id, 'exif_cleaner', 3, 3),
+    [photos]
+  );
 
   return (
     <View style={styles.container}>
       <AtmosphericBackground />
 
       <SafeAreaView style={styles.safeArea} edges={['top']}>
-        {/* Top Bar */}
-        <Animated.View entering={FadeInDown.duration(400)} style={styles.topBar}>
-          <TouchableOpacity activeOpacity={0.8} onPress={onBack} style={styles.backButton}>
-            <ArrowLeft color={colors.textPrimary} size={20} strokeWidth={2.4} />
-          </TouchableOpacity>
-          <Text style={styles.topBarTitle}>{t('exif_cleaner.title')}</Text>
-          <View style={{ width: 40 }} />
-        </Animated.View>
+        <ScreenHeader title={t('exif_cleaner.title')} onBack={onBack} />
 
-        {/* Info Banner */}
-        <Animated.View entering={FadeInDown.delay(100)} style={styles.infoBanner}>
-          <GlassPanel borderRadius={24} style={styles.infoPanel} contentStyle={styles.infoContent} intensity={25}>
+        <Animated.View entering={enter(FadeInDown.duration(400).delay(60))} style={styles.infoBanner}>
+          <GlassPanel
+            borderRadius={radius.card}
+            borderColor={alpha(colors.successMint, 0.24)}
+            contentStyle={styles.infoContent}
+            intensity={26}
+            glowAccent={colors.successMint}
+          >
             <View style={styles.infoBadgeRow}>
-              <ShieldCheck color={colors.successMint} size={18} style={{ marginRight: 6 }} />
+              <ShieldCheck color={colors.successMint} size={16} />
               <Text style={styles.infoBadgeText}>{t('exif_cleaner.clean_badge')}</Text>
             </View>
             <Text style={styles.infoDesc}>{t('exif_cleaner.info_text')}</Text>
           </GlassPanel>
         </Animated.View>
 
-        {/* Photo List */}
         {loading ? (
-          <Animated.View entering={FadeIn} style={styles.loadingContainer}>
-            <ActivityIndicator size="large" color={colors.successMint} style={{ marginBottom: 12 }} />
-            <Text style={styles.loadingText}>{t('dashboard.status.scanning')}</Text>
-          </Animated.View>
+          <LoadingState label={t('dashboard.status.scanning')} accent={colors.successMint} />
+        ) : photos.length === 0 ? (
+          <EmptyState
+            icon={ShieldCheck}
+            title={t('exif_cleaner.no_photos')}
+            description={t('exif_cleaner.no_photos_desc')}
+            accent={colors.successMint}
+          />
         ) : (
           <FlashList
-            data={photos}
-            keyExtractor={(item) => item.id}
-            contentContainerStyle={[
-              styles.listContent,
-              { paddingBottom: Math.max(50, insets.bottom + 20) },
-            ]}
-            renderItem={({ item }) => {
+            data={adRows}
+            keyExtractor={(row) => row.key}
+            contentContainerStyle={{
+              paddingHorizontal: 20,
+              paddingTop: 8,
+              paddingBottom: Math.max(50, insets.bottom + 20),
+            }}
+            renderItem={({ item: row }) => {
+              if (row.kind === 'ad') return <AdBanner placement={row.placement} />;
+              const item = row.item;
               const isBusy = processingId === item.id;
+              const isCleaned = cleanedIds.has(item.id);
+
               return (
                 <View style={styles.cardWrapper}>
-                  <GlassPanel borderRadius={24} style={styles.photoCard} contentStyle={styles.photoCardContent} intensity={25}>
-                    <Image source={{ uri: item.uri }} style={styles.thumbnail} resizeMode="cover" />
-                    
+                  <GlassPanel
+                    borderRadius={radius.card}
+                    borderColor={isCleaned ? alpha(colors.successMint, 0.4) : colors.border}
+                    contentStyle={styles.cardContent}
+                    intensity={26}
+                  >
+                    <Image source={{ uri: item.uri }} style={styles.thumbnail} resizeMethod="resize" resizeMode="cover" />
+
                     <View style={styles.cardDetails}>
-                      <Text style={styles.photoName} numberOfLines={1}>{item.filename}</Text>
-                      <View style={styles.locationPill}>
-                        <MapPin color={colors.warningAmber} size={12} style={{ marginRight: 4 }} />
-                        <Text style={styles.locationPillText}>{t('exif_cleaner.location_detected')}</Text>
-                      </View>
+                      <Text style={styles.photoName} numberOfLines={1}>
+                        {item.filename}
+                      </Text>
+                      {isCleaned ? (
+                        <View style={[styles.pill, styles.pillClean]}>
+                          <Check color={colors.successMint} size={11} strokeWidth={3} />
+                          <Text style={[styles.pillText, { color: colors.successMint }]}>
+                            {t('exif_cleaner.cleaned_badge')}
+                          </Text>
+                        </View>
+                      ) : (
+                        <View style={[styles.pill, styles.pillLocation]}>
+                          <MapPin color={colors.warningAmber} size={11} />
+                          <Text style={[styles.pillText, { color: colors.warningAmber }]}>
+                            {t('exif_cleaner.location_detected')}
+                          </Text>
+                        </View>
+                      )}
                     </View>
 
                     <GlassButton
-                      borderRadius={20}
-                      borderColor={colors.successMint}
+                      compact
+                      borderRadius={radius.chip}
+                      borderColor={alpha(colors.successMint, 0.45)}
+                      glowColor={colors.successMint}
                       style={styles.cleanBtn}
                       onPress={() => handleCleanPhoto(item)}
-                      disabled={isBusy}
+                      disabled={isBusy || isCleaned}
                     >
                       {isBusy ? (
                         <ActivityIndicator size="small" color={colors.successMint} />
                       ) : (
                         <>
-                          <EyeOff color={colors.successMint} size={14} style={{ marginRight: 4 }} />
-                          <Text style={styles.cleanBtnText}>{t('exif_cleaner.clean_and_save')}</Text>
+                          <EyeOff color={colors.successMint} size={13} />
+                          <Text style={styles.cleanBtnText}>{t('exif_cleaner.clean_action')}</Text>
                         </>
                       )}
                     </GlassButton>
@@ -170,123 +202,88 @@ export const ExifCleanerScreen: React.FC<Props> = ({ onBack }) => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: colors.oledBlack,
+    backgroundColor: colors.canvas,
   },
   safeArea: {
     flex: 1,
   },
-  topBar: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.08)',
-  },
-  backButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: 'rgba(255, 255, 255, 0.05)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  topBarTitle: {
-    fontSize: 16,
-    fontWeight: '900',
-    color: colors.textPrimary,
-  },
   infoBanner: {
     paddingHorizontal: 20,
     paddingTop: 16,
-    paddingBottom: 10,
-  },
-  infoPanel: {
-    borderRadius: 24,
+    paddingBottom: 12,
   },
   infoContent: {
-    padding: 16,
+    padding: 15,
   },
   infoBadgeRow: {
     flexDirection: 'row',
     alignItems: 'center',
+    gap: 6,
     marginBottom: 6,
   },
   infoBadgeText: {
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: '800',
     color: colors.successMint,
-    letterSpacing: 1,
+    letterSpacing: 0.8,
   },
   infoDesc: {
-    fontSize: 12,
+    fontSize: 13,
     color: colors.textSecondary,
     lineHeight: 17,
   },
-  listContent: {
-    paddingHorizontal: 20,
-    paddingTop: 8,
-    paddingBottom: 40,
-  },
   cardWrapper: {
-    marginBottom: 12,
+    marginBottom: 10,
   },
-  photoCard: {
-    borderRadius: 24,
-  },
-  photoCardContent: {
-    padding: 12,
+  cardContent: {
+    padding: 11,
     flexDirection: 'row',
     alignItems: 'center',
   },
   thumbnail: {
-    width: 60,
-    height: 60,
-    borderRadius: 16,
-    marginRight: 14,
+    width: 56,
+    height: 56,
+    borderRadius: 15,
+    marginRight: 12,
+    backgroundColor: colors.surfaceSunken,
   },
   cardDetails: {
     flex: 1,
     paddingRight: 8,
   },
   photoName: {
-    fontSize: 14,
+    fontSize: 13.5,
     fontWeight: '800',
     color: colors.textPrimary,
-    marginBottom: 4,
+    marginBottom: 5,
   },
-  locationPill: {
+  pill: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(245, 158, 11, 0.12)',
-    paddingHorizontal: 6,
-    paddingVertical: 2,
+    gap: 4,
+    paddingHorizontal: 7,
+    paddingVertical: 3,
     borderRadius: 8,
     alignSelf: 'flex-start',
   },
-  locationPillText: {
-    fontSize: 10,
+  pillLocation: {
+    backgroundColor: alpha(colors.warningAmber, 0.12),
+  },
+  pillClean: {
+    backgroundColor: alpha(colors.successMint, 0.12),
+  },
+  pillText: {
+    fontSize: 13,
     fontWeight: '700',
-    color: colors.warningAmber,
   },
   cleanBtn: {
-    paddingHorizontal: 12,
+    width: 'auto',
     height: 38,
   },
   cleanBtnText: {
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: '800',
     color: colors.successMint,
-  },
-  loadingContainer: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingVertical: 60,
-  },
-  loadingText: {
-    color: colors.textSecondary,
-    fontSize: 14,
-    fontWeight: '600',
+    marginLeft: 5,
   },
 });

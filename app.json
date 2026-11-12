@@ -2,24 +2,33 @@
   "expo": {
     "name": "photocell",
     "slug": "photocell",
-    "version": "1.0.5",
-    "orientation": "portrait",
+    "version": "1.2.3",
+    "orientation": "default",
     "icon": "./assets/photocell512px.png",
-    "userInterfaceStyle": "light",
+    "userInterfaceStyle": "automatic",
     "locales": {
       "tr": "./locales/tr.json"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.abdllhekc.photocell",
+      "buildNumber": "15",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
-      "versionCode": 6,
+      "versionCode": 15,
       "adaptiveIcon": {
         "backgroundColor": "#000000",
         "foregroundImage": "./assets/photocell512px.png"
       },
       "predictiveBackGestureEnabled": false,
-      "package": "com.abdllhekc.photocell"
+      "package": "com.abdllhekc.photocell",
+      "blockedPermissions": [
+        "android.permission.SYSTEM_ALERT_WINDOW",
+        "android.permission.READ_MEDIA_AUDIO"
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -30,15 +39,25 @@
         {
           "photosPermission": "Allow Photocell to access your photos to help you clean up duplicates and old screenshots.",
           "savePhotosPermission": "Allow Photocell to save photos.",
-          "isAccessMediaLocationEnabled": true
+          "isAccessMediaLocationEnabled": true,
+          "granularPermissions": [
+            "photo",
+            "video"
+          ]
         }
       ],
       "expo-video",
       [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Allow Photocell to use Face ID to unlock your private vault."
+        }
+      ],
+      [
         "expo-notifications",
         {
           "icon": "./assets/photocell512px.png",
-          "color": "#00F2FE"
+          "color": "#9333EA"
         }
       ],
       [
@@ -46,7 +65,8 @@
         {
           "contactsPermission": "Allow Photocell to access your contacts to help you find and clean duplicates."
         }
-      ]
+      ],
+      "./plugins/withAndroidRelease"
     ]
   }
 }

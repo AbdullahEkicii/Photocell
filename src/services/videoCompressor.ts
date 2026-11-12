@@ -2,6 +2,9 @@ import * as MediaLibrary from 'expo-media-library/legacy';
 import * as FileSystem from 'expo-file-system/legacy';
 import { Video } from 'react-native-compressor';
 import { ScanCacheService } from './scanCacheService';
+import { deleteMediaAssets } from './mediaScanner';
+import { measureAssets, fetchLikelyHeaviest, discardTempFile } from './assetSize';
+import type { ReplaceOutcome } from './photoCompressor';
 
 export interface VideoAsset {
   id: string;
@@ -26,6 +29,8 @@ export interface CompressionResult {
   formattedSaved: string;
   savedRatioPercent?: number;
   outputPath?: string;
+  /** False when compression did not make the file smaller. */
+  isSmaller: boolean;
 }
 
 export const formatByteSize = (bytes: number): string => {
@@ -52,6 +57,11 @@ const getQualityTag = (width: number, height: number): string => {
   return 'SD';
 };
 
+/** Videos under this size are not worth the time compression takes. */
+const MIN_VIDEO_BYTES = 5 * 1024 * 1024;
+const VIDEO_POOL = 800;
+const VIDEO_MEASURE_COUNT = 80;
+
 export const fetchDeviceVideos = async (forceRefresh = false): Promise<VideoAsset[]> => {
   if (!forceRefresh) {
     const cached = ScanCacheService.getVideoList();
@@ -66,55 +76,40 @@ export const fetchDeviceVideos = async (forceRefresh = false): Promise<VideoAsse
       return [];
     }
 
-    const { assets } = await MediaLibrary.getAssetsAsync({
-      mediaType: 'video',
-      first: 50,
-      sortBy: [['creationTime', false]],
-    });
+    const assets = await fetchLikelyHeaviest('video', VIDEO_POOL, VIDEO_MEASURE_COUNT);
 
-    const videos: VideoAsset[] = [];
+    // Real sizes only. A video whose size cannot be read is left out instead of
+    // being listed with an invented 0 MB, and the list is heaviest-first since
+    // that is where compression pays off.
+    const measured = await measureAssets(assets, 6);
 
-    for (const asset of assets) {
-      try {
-        let size = 0;
-        let fileUri = asset.uri;
-        const info = await FileSystem.getInfoAsync(asset.uri).catch(() => null);
-        if (info && info.exists && 'size' in info && typeof info.size === 'number') {
-          size = info.size;
-        } else {
-          const assetInfo = await MediaLibrary.getAssetInfoAsync(asset).catch(() => null);
-          if (assetInfo?.localUri) {
-            fileUri = assetInfo.localUri;
-            const localInfo = await FileSystem.getInfoAsync(assetInfo.localUri).catch(() => null);
-            if (localInfo && localInfo.exists && 'size' in localInfo && typeof localInfo.size === 'number') {
-              size = localInfo.size;
-            }
-          }
-        }
-
+    const videos: VideoAsset[] = measured
+      .filter(({ measured: m }) => m.size >= MIN_VIDEO_BYTES)
+      .sort((a, b) => b.measured.size - a.measured.size)
+      .map(({ asset, measured: m }) => {
         const quality = getQualityTag(asset.width, asset.height);
-        const savingRatio = quality === '4K' ? 0.60 : quality === '1080P' ? 0.50 : 0.35;
-        const potentialSavingBytes = Math.round(size * savingRatio);
+        // A rough expectation by resolution, shown with a "~" - the actual
+        // saving is only known once the video has been compressed.
+        const savingRatio = quality === '4K' ? 0.6 : quality === '1080P' ? 0.5 : 0.35;
+        const potentialSavingBytes = Math.round(m.size * savingRatio);
 
-        videos.push({
+        return {
           id: asset.id,
           filename: asset.filename || `Video_${asset.id.slice(0, 6)}.mp4`,
-          uri: fileUri,
+          uri: m.uri,
           duration: asset.duration,
           width: asset.width,
           height: asset.height,
-          size,
-          formattedSize: formatByteSize(size),
+          size: m.size,
+          formattedSize: formatByteSize(m.size),
           qualityTag: quality,
           formattedDuration: formatDuration(asset.duration),
           potentialSavingBytes,
-          formattedPotentialSaving: formatByteSize(potentialSavingBytes),
-        });
-      } catch (err) {
-        console.warn('Could not read video info for asset:', asset.id, err);
-      }
-    }
+          formattedPotentialSaving: `~${formatByteSize(potentialSavingBytes)}`,
+        };
+      });
 
+    ScanCacheService.setVideoList(videos);
     return videos;
   } catch (error) {
     console.error('Failed to fetch device videos:', error);
@@ -128,58 +123,72 @@ export const fetchDeviceVideos = async (forceRefresh = false): Promise<VideoAsse
  */
 export const compressVideo = async (
   video: VideoAsset,
-  onProgress?: (progress: number) => void
+  onProgress?: (progress: number) => void,
+  /** Receives an id that can be passed to `cancelVideoCompression`. */
+  onCancellationId?: (cancellationId: string) => void
 ): Promise<CompressionResult> => {
   const originalSize = video.size;
+  if (originalSize <= 0) {
+    throw new Error('Could not read the original video size');
+  }
 
+  let sourceUri = video.uri;
   try {
-    let sourceUri = video.uri;
-    try {
-      const assetInfo = await MediaLibrary.getAssetInfoAsync(video.id).catch(() => null);
-      if (assetInfo?.localUri) {
-        sourceUri = assetInfo.localUri;
-      }
-    } catch {
-      // video.uri kullan
+    const assetInfo = await MediaLibrary.getAssetInfoAsync(video.id).catch(() => null);
+    if (assetInfo?.localUri) sourceUri = assetInfo.localUri;
+  } catch {
+    // fall back to video.uri
+  }
+
+  const compressedUri = await Video.compress(
+    sourceUri,
+    {
+      compressionMethod: 'auto',
+      maxSize: 1280,
+      getCancellationId: onCancellationId,
+    },
+    (progress) => {
+      onProgress?.(Math.round(progress * 100));
     }
+  );
 
-    const compressedUri = await Video.compress(
-      sourceUri,
-      {
-        compressionMethod: 'auto',
-        maxSize: 1280,
-      },
-      (progress) => {
-        if (onProgress) {
-          onProgress(Math.round(progress * 100));
-        }
-      }
-    );
+  const fileInfo = await FileSystem.getInfoAsync(compressedUri);
+  if (!fileInfo.exists || !('size' in fileInfo) || typeof fileInfo.size !== 'number') {
+    throw new Error('Could not read the compressed video size');
+  }
 
-    const fileInfo = await FileSystem.getInfoAsync(compressedUri);
-    let compressedSize = 0;
-    if (fileInfo.exists && 'size' in fileInfo && typeof fileInfo.size === 'number') {
-      compressedSize = fileInfo.size;
-    } else {
-      compressedSize = Math.round(originalSize * 0.45);
-    }
+  const compressedSize = fileInfo.size;
+  // The library may hand back the source untouched when it decides there is
+  // nothing to gain; never treat that file as a compressed copy.
+  const returnedSource = compressedUri === sourceUri || compressedUri === video.uri;
+  const isSmaller = !returnedSource && compressedSize < originalSize;
+  const savedBytes = isSmaller ? originalSize - compressedSize : 0;
 
-    const savedBytes = Math.max(0, originalSize - compressedSize);
+  if (!isSmaller && !returnedSource) await discardTempFile(compressedUri);
 
-    return {
-      success: true,
-      outputPath: compressedUri,
-      originalSizeBytes: originalSize,
-      compressedSizeBytes: compressedSize,
-      savedBytes,
-      formattedSaved: formatByteSize(savedBytes),
-      savedRatioPercent: Math.round((savedBytes / Math.max(1, originalSize)) * 100),
-    };
+  return {
+    success: true,
+    outputPath: isSmaller ? compressedUri : undefined,
+    originalSizeBytes: originalSize,
+    compressedSizeBytes: compressedSize,
+    savedBytes,
+    formattedSaved: formatByteSize(savedBytes),
+    savedRatioPercent: Math.round((savedBytes / Math.max(1, originalSize)) * 100),
+    isSmaller,
+  };
+};
+
+/** Stops a compression that is still running. */
+export const cancelVideoCompression = (cancellationId: string): void => {
+  try {
+    Video.cancelCompression(cancellationId);
   } catch (error) {
-    console.error('Video compression error:', error);
-    throw error;
+    console.warn('Could not cancel video compression:', error);
   }
 };
+
+/** Best-effort removal of an unused compressed output. */
+export const discardCompressedVideo = discardTempFile;
 
 /**
  * Sıkıştırılmış yeni videoyu galeriye kaydeder (Orijinal korunur).
@@ -197,6 +206,7 @@ export const saveCompressedVideoToLibrary = async (fileUri: string): Promise<boo
     }
 
     await MediaLibrary.createAssetAsync(fileUri);
+    await discardTempFile(fileUri);
     ScanCacheService.invalidateVideoList();
     return true;
   } catch (error) {
@@ -211,29 +221,29 @@ export const saveCompressedVideoToLibrary = async (fileUri: string): Promise<boo
 export const replaceOriginalVideoWithCompressed = async (
   originalAssetId: string,
   compressedUri: string
-): Promise<boolean> => {
+): Promise<ReplaceOutcome> => {
   try {
     const { status } = await MediaLibrary.requestPermissionsAsync(false, ['video']);
-    if (status !== 'granted') return false;
+    if (status !== 'granted') return 'failed';
 
     // 1. Sıkıştırılmış dosyanın diskte varlığını doğrula
     const fileInfo = await FileSystem.getInfoAsync(compressedUri);
     if (!fileInfo.exists) {
       console.error('Replace failed: Compressed file does not exist at path:', compressedUri);
-      return false;
+      return 'failed';
     }
 
     // 2. Sıkıştırılmış yeni videoyu galeriye kaydet
     await MediaLibrary.createAssetAsync(compressedUri);
 
-    // 3. Eski orijinal videoyu sil
-    if (originalAssetId) {
-      await MediaLibrary.deleteAssetsAsync([originalAssetId]);
-    }
+    // 3. Eski orijinal videoyu sil. Android her silme için kullanıcıdan onay
+    // ister; reddedilirse orijinal yerinde kalır ve bunu doğru bildirmeliyiz.
+    const deleted = originalAssetId ? await deleteMediaAssets([originalAssetId]) : false;
+    await discardTempFile(compressedUri);
     ScanCacheService.invalidateVideoList();
-    return true;
+    return deleted ? 'replaced' : 'copy_only';
   } catch (error) {
     console.error('Failed replacing original video:', error);
-    return false;
+    return 'failed';
   }
 };

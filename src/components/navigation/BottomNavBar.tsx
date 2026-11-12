@@ -1,30 +1,126 @@
-import React from 'react';
-import { View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+import React, { useEffect, useRef, useState } from 'react';
+import { enter } from '../../theme/motion';
+import { View, Text, Pressable, StyleSheet } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
-import Animated from 'react-native-reanimated';
-import { LinearGradient } from 'expo-linear-gradient';
-import { Home, Images, Calendar, Layers, ShieldCheck, BarChart2 } from 'lucide-react-native';
+import Animated, {
+  useSharedValue,
+  useAnimatedStyle,
+  withSpring,
+  withTiming,
+  interpolate,
+  SlideInDown,
+  SlideOutDown,
+} from 'react-native-reanimated';
+import { Home, Images, Calendar, Layers, ShieldCheck } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 
-import { GlassPanel } from '../glass/GlassPanel';
-import { colors } from '../../theme/colors';
+import { LiquidGlass } from '../glass/LiquidGlass';
+import { colors, alpha } from '../../theme/colors';
 
-export type TabType = 'home' | 'photos' | 'timeline' | 'tools' | 'vault' | 'report';
+export type TabType = 'home' | 'photos' | 'timeline' | 'tools' | 'vault';
 
 interface BottomNavBarProps {
   activeTab?: TabType;
   onSelectTab?: (tab: TabType) => void;
 }
 
-const TABS: { id: TabType; labelKey: string; Icon: any; accentColor: string }[] = [
-  { id: 'home', labelKey: 'nav.home', Icon: Home, accentColor: colors.neonCyan },
-  { id: 'photos', labelKey: 'nav.photos', Icon: Images, accentColor: colors.neonCyan },
-  { id: 'timeline', labelKey: 'nav.timeline', Icon: Calendar, accentColor: colors.electricPurple },
-  { id: 'tools', labelKey: 'nav.tools', Icon: Layers, accentColor: colors.electricPurple },
-  { id: 'vault', labelKey: 'nav.vault', Icon: ShieldCheck, accentColor: colors.successMint },
-  { id: 'report', labelKey: 'nav.report', Icon: BarChart2, accentColor: colors.warningAmber },
+interface TabDef {
+  id: TabType;
+  labelKey: string;
+  Icon: React.ComponentType<{ color?: string; size?: number; strokeWidth?: number }>;
+}
+
+const TABS: TabDef[] = [
+  { id: 'home', labelKey: 'nav.home', Icon: Home },
+  { id: 'photos', labelKey: 'nav.photos', Icon: Images },
+  { id: 'timeline', labelKey: 'nav.timeline', Icon: Calendar },
+  { id: 'tools', labelKey: 'nav.tools', Icon: Layers },
+  { id: 'vault', labelKey: 'nav.vault', Icon: ShieldCheck },
 ];
+
+const BAR_PADDING = 6;
+const PILL_GAP = 3;
+const ICON = 22;
+const INACTIVE_WIDTH = 50;
+const LABEL_CHAR = 8.4; // rough width of one 14 pt bold glyph
+const SPRING = { damping: 17, stiffness: 230, mass: 0.8 } as const;
+
+/**
+ * Width of a tab. The active tab is as wide as its label needs (expanding label),
+ * the others are icon-only and share the rest.
+ */
+const activeWidthFor = (label: string) =>
+  Math.min(150, Math.max(96, ICON + 10 + label.length * LABEL_CHAR + 26));
+
+interface TabButtonProps {
+  tab: TabDef;
+  isActive: boolean;
+  label: string;
+  width: number;
+  onPress: () => void;
+}
+
+/**
+ * One tab. Inactive: icon only. Active: the label expands out of the icon with a
+ * spring, so the selected tab reads at a glance without a label on every tab.
+ */
+const TabButton: React.FC<TabButtonProps> = ({ tab, isActive, label, width, onPress }) => {
+  const progress = useSharedValue(isActive ? 1 : 0);
+  const press = useSharedValue(1);
+
+  useEffect(() => {
+    progress.value = withSpring(isActive ? 1 : 0, { damping: 15, stiffness: 240 });
+  }, [isActive, progress]);
+
+  const iconWrapStyle = useAnimatedStyle(() => ({
+    transform: [
+      { translateY: interpolate(progress.value, [0, 1], [0, -1]) },
+      { scale: press.value },
+    ],
+  }));
+  const mutedIconStyle = useAnimatedStyle(() => ({ opacity: 1 - progress.value }));
+  const activeIconStyle = useAnimatedStyle(() => ({ opacity: progress.value }));
+  const labelStyle = useAnimatedStyle(() => ({
+    opacity: progress.value,
+    maxWidth: interpolate(progress.value, [0, 1], [0, Math.max(0, width - ICON - 24)]),
+    marginLeft: interpolate(progress.value, [0, 1], [0, 8]),
+  }));
+
+  const Icon = tab.Icon;
+
+  return (
+    <Pressable
+      onPress={onPress}
+      onPressIn={() => {
+        press.value = withTiming(0.88, { duration: 90 });
+      }}
+      onPressOut={() => {
+        press.value = withSpring(1, { damping: 12, stiffness: 320 });
+      }}
+      style={[styles.tabItem, { width }]}
+      accessibilityRole="tab"
+      accessibilityState={{ selected: isActive }}
+      accessibilityLabel={label}
+      hitSlop={4}
+    >
+      <Animated.View style={[styles.iconWrap, iconWrapStyle]}>
+        <Animated.View style={[StyleSheet.absoluteFill, styles.iconLayer, mutedIconStyle]}>
+          <Icon color={colors.textMuted} size={ICON} strokeWidth={2} />
+        </Animated.View>
+        <Animated.View style={[StyleSheet.absoluteFill, styles.iconLayer, activeIconStyle]}>
+          <Icon color={colors.primary} size={ICON} strokeWidth={2.4} />
+        </Animated.View>
+      </Animated.View>
+
+      <Animated.View style={[styles.labelClip, labelStyle]}>
+        <Text numberOfLines={1} style={[styles.tabLabel, isActive && styles.tabLabelActive]}>
+          {label}
+        </Text>
+      </Animated.View>
+    </Pressable>
+  );
+};
 
 export const BottomNavBar: React.FC<BottomNavBarProps> = ({
   activeTab: externalActiveTab,
@@ -32,77 +128,89 @@ export const BottomNavBar: React.FC<BottomNavBarProps> = ({
 }) => {
   const { t } = useTranslation();
   const insets = useSafeAreaInsets();
-  const [internalActiveTab, setInternalActiveTab] = React.useState<TabType>('home');
+  const [internalActiveTab, setInternalActiveTab] = useState<TabType>('home');
   const currentTab = externalActiveTab || internalActiveTab;
+  const activeIndex = Math.max(0, TABS.findIndex((tab) => tab.id === currentTab));
+
+  const [panelWidth, setPanelWidth] = useState(0);
+  const labels = TABS.map((tab) => t(tab.labelKey));
+
+  // Widths: inactive tabs are fixed, the active one fits its label. If the total would
+  // overflow a narrow phone, every tab is scaled down together so the bar never clips.
+  const rawWidths = TABS.map((_, i) => (i === activeIndex ? activeWidthFor(labels[i]) : INACTIVE_WIDTH));
+  const innerWidth = Math.max(0, panelWidth - BAR_PADDING * 2);
+  const rawTotal = rawWidths.reduce((a, b) => a + b, 0);
+  const scale = innerWidth > 0 && rawTotal > innerWidth ? innerWidth / rawTotal : 1;
+  const widths = rawWidths.map((w) => w * scale);
+  const xs = widths.map((_, i) => widths.slice(0, i).reduce((a, b) => a + b, 0));
+
+  const pillTargetX = (xs[activeIndex] ?? 0) + PILL_GAP;
+  const pillTargetW = Math.max(0, (widths[activeIndex] ?? 0) - PILL_GAP * 2);
+
+  const pillX = useSharedValue(0);
+  const pillW = useSharedValue(0);
+  const hasPositionedRef = useRef(false);
+
+  useEffect(() => {
+    if (innerWidth === 0) return;
+    if (!hasPositionedRef.current) {
+      // First paint: snap, so the bar does not slide in from the corner.
+      pillX.value = pillTargetX;
+      pillW.value = pillTargetW;
+      hasPositionedRef.current = true;
+      return;
+    }
+    pillX.value = withSpring(pillTargetX, SPRING);
+    pillW.value = withSpring(pillTargetW, SPRING);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pillTargetX, pillTargetW, innerWidth]);
+
+  const pillStyle = useAnimatedStyle(() => ({
+    width: pillW.value,
+    transform: [{ translateX: pillX.value }],
+  }));
 
   const handleSelect = (tab: TabType) => {
-    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    if (tab !== currentTab) Haptics.selectionAsync().catch(() => {});
     setInternalActiveTab(tab);
-    if (onSelectTab) onSelectTab(tab);
+    onSelectTab?.(tab);
   };
 
-  const dynamicBottom = Math.max(14, insets.bottom + 6);
+  const bottomOffset = Math.max(14, insets.bottom + 8);
 
   return (
-    <View style={[styles.outerContainer, { bottom: dynamicBottom }]} pointerEvents="box-none">
-      <GlassPanel 
-        borderRadius={44} 
-        intensity={40} 
-        borderColor="rgba(226, 232, 240, 0.9)"
-        fillColor="rgba(255, 255, 255, 0.92)"
-        glowAccent={colors.neonCyan}
+    <Animated.View
+      entering={enter(SlideInDown.springify().damping(18).stiffness(160))}
+      exiting={SlideOutDown.duration(180)}
+      style={[styles.outerContainer, { bottom: bottomOffset }]}
+      pointerEvents="box-none"
+    >
+      <LiquidGlass
+        variant="regular"
+        blur="live"
+        borderRadius={32}
         style={styles.navBarPanel}
         contentStyle={styles.navBarContent}
+        onLayout={(e) => setPanelWidth(e.nativeEvent.layout.width)}
       >
-        {/* Top Edge Light Specular Glow */}
-        <LinearGradient
-          colors={['rgba(255, 255, 255, 0.95)', 'rgba(147, 51, 234, 0.2)', 'transparent']}
-          style={styles.topBarSheen}
-          start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 0 }}
-        />
+        {innerWidth > 0 && (
+          <Animated.View pointerEvents="none" style={[styles.pill, pillStyle]}>
+            <View style={[StyleSheet.absoluteFill, { backgroundColor: alpha(colors.primary, 0.16) }]} />
+          </Animated.View>
+        )}
 
-        {TABS.map((tab) => {
-          const isActive = tab.id === currentTab;
-          const IconComponent = tab.Icon;
-          const accentColor = tab.accentColor;
-
-          return (
-            <TouchableOpacity
-              key={tab.id}
-              activeOpacity={0.8}
-              onPress={() => handleSelect(tab.id)}
-              style={[
-                styles.tabItem,
-                isActive && [styles.activeTabItem, { borderColor: `${accentColor}40`, backgroundColor: `${accentColor}12` }],
-              ]}
-            >
-              <View style={styles.iconLabelGroup}>
-                <IconComponent
-                  color={isActive ? accentColor : colors.textMuted}
-                  size={isActive ? 19 : 20}
-                  strokeWidth={isActive ? 2.6 : 2}
-                />
-                {isActive && (
-                  <Animated.Text numberOfLines={1} style={[styles.tabLabel, { color: accentColor }]}>
-                    {t(tab.labelKey)}
-                  </Animated.Text>
-                )}
-              </View>
-
-              {isActive && (
-                <View
-                  style={[
-                    styles.activeDot,
-                    { backgroundColor: accentColor },
-                  ]}
-                />
-              )}
-            </TouchableOpacity>
-          );
-        })}
-      </GlassPanel>
-    </View>
+        {TABS.map((tab, i) => (
+          <TabButton
+            key={tab.id}
+            tab={tab}
+            isActive={i === activeIndex}
+            label={labels[i]}
+            width={widths[i]}
+            onPress={() => handleSelect(tab.id)}
+          />
+        ))}
+      </LiquidGlass>
+    </Animated.View>
   );
 };
 
@@ -112,62 +220,51 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     alignItems: 'center',
-    justifyContent: 'center',
     zIndex: 50,
   },
   navBarPanel: {
-    width: '95%',
-    maxWidth: 440,
-    height: 66,
-    shadowColor: '#0F172A',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.08,
-    shadowRadius: 20,
-    elevation: 8,
+    width: '94%',
+    maxWidth: 460,
   },
   navBarContent: {
     flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 4,
-    height: '100%',
+    alignItems: 'stretch',
+    height: 64,
+    padding: BAR_PADDING,
   },
-  topBarSheen: {
+  pill: {
     position: 'absolute',
-    top: 0,
-    left: 20,
-    right: 20,
-    height: 1.5,
+    top: BAR_PADDING,
+    bottom: BAR_PADDING,
+    left: BAR_PADDING,
+    borderRadius: 24,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: alpha(colors.primary, 0.22),
   },
   tabItem: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 8,
-    paddingHorizontal: 8,
-    borderRadius: 24,
-    position: 'relative',
-    height: 48,
   },
-  activeTabItem: {
-    borderWidth: 1,
-    paddingHorizontal: 12,
+  iconWrap: {
+    width: ICON,
+    height: ICON,
   },
-  iconLabelGroup: {
-    flexDirection: 'row',
+  iconLayer: {
     alignItems: 'center',
-    gap: 4,
+    justifyContent: 'center',
+  },
+  labelClip: {
+    overflow: 'hidden',
   },
   tabLabel: {
-    fontSize: 11,
-    fontWeight: '800',
-    letterSpacing: 0.2,
+    // HIG: 11 pt is the smallest text size
+    fontSize: 14,
+    fontWeight: '700',
+    color: colors.primary,
   },
-  activeDot: {
-    position: 'absolute',
-    bottom: 2,
-    width: 4,
-    height: 4,
-    borderRadius: 2,
+  tabLabelActive: {
+    fontWeight: '800',
   },
 });
