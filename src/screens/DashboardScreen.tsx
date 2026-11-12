@@ -1,10 +1,11 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
-import { View, Text, StyleSheet, TouchableOpacity, ScrollView, RefreshControl } from 'react-native';
+import { enter } from '../theme/motion';
+import { View, Text, StyleSheet, TouchableOpacity, ScrollView, RefreshControl, ActivityIndicator } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
 import Animated, { FadeInDown, FadeInUp, FadeIn } from 'react-native-reanimated';
 import { LinearGradient } from 'expo-linear-gradient';
-import { Waves, ImageOff, Zap, Sparkles, ChevronRight, Clock, Copy, RefreshCw, AlertTriangle } from 'lucide-react-native';
+import { Waves, ImageOff, Zap, Sparkles, ChevronRight, Clock, Copy, RefreshCw, AlertTriangle, CheckCircle2 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 
 import { AtmosphericBackground } from '../components/glass/AtmosphericBackground';
@@ -13,12 +14,15 @@ import { GlassButton } from '../components/glass/GlassButton';
 import { CircularGauge } from '../components/glass/CircularGauge';
 import { colors, alpha, radius } from '../theme/colors';
 import { ScreenHeader } from '../components/layout/ScreenHeader';
+import { AdBanner } from '../components/ads/AdBanner';
+import { CategoryShortcuts } from '../components/dashboard/CategoryShortcuts';
 import { EmptyState } from '../components/layout/EmptyState';
 import {
   scanPhotos,
   checkMediaPermissionsStatus,
   isPhotoScanInProgress,
   getLatestScanBatchMeta,
+  subscribeScanBatch,
   ScanResult,
   PhotoAsset,
   ScanProgressInfo,
@@ -28,25 +32,13 @@ import { PermissionGuidanceModal } from '../components/PermissionGuidanceModal';
 import { SettingsModal } from '../components/settings/SettingsModal';
 import { AnalyticsService } from '../services/analyticsService';
 import { ScanCacheService } from '../services/scanCacheService';
+import { ScanEta } from '../services/scanEta';
 
 const formatSizeParts = (bytes: number) => {
   if (bytes === 0) return { value: '0', unit: 'MB' };
   if (bytes < 1024 * 1024) return { value: (bytes / 1024).toFixed(1), unit: 'KB' };
   if (bytes < 1024 * 1024 * 1024) return { value: (bytes / (1024 * 1024)).toFixed(1), unit: 'MB' };
   return { value: (bytes / (1024 * 1024 * 1024)).toFixed(1), unit: 'GB' };
-};
-
-/**
- * Extrapolates a "time remaining" estimate from how long this scan has
- * actually taken so far, rather than assuming a fixed made-up rate.
- * Returns null below 15% progress, where the elapsed/progress ratio is too
- * noisy to mean anything — a wrong-looking estimate is worse than none.
- */
-const estimateRemainingSeconds = (startTime: number, progress: number): number | null => {
-  if (progress < 15 || progress >= 100) return null;
-  const elapsedMs = Date.now() - startTime;
-  const estimatedTotalMs = elapsedMs / (progress / 100);
-  return Math.max(1, Math.round((estimatedTotalMs - elapsedMs) / 1000));
 };
 
 interface Props {
@@ -74,7 +66,7 @@ const BentoCard: React.FC<BentoCardProps> = ({
   highlightBadge,
 }) => {
   return (
-    <Animated.View entering={FadeInUp.duration(600).delay(delay).springify()} style={styles.bentoWrapper}>
+    <Animated.View entering={enter(FadeInUp.duration(600).delay(delay).springify())} style={styles.bentoWrapper}>
       <TouchableOpacity activeOpacity={0.88} onPress={onPress} style={{ width: '100%' }}>
         <GlassPanel
           borderRadius={radius.card}
@@ -130,11 +122,11 @@ export const DashboardScreen: React.FC<Props> = ({ onSmartClean, onFullscreenTog
     stepKey: 'dashboard.status.scan_step_init',
     stepDefault: 'Galeri ve Medya Dizini Başlatılıyor...',
   });
-  // How long *this* scan has actually taken so far, used to extrapolate a
-  // real remaining-time estimate — the previous "seconds left" text assumed a
-  // fixed, made-up rate (25% per second) and was almost always wrong.
+  // Remaining time, from the measured photos-per-second rate of the scan (see
+  // ScanEta). Counts down once a second between batch reports.
   const [etaSeconds, setEtaSeconds] = useState<number | null>(null);
-  const scanStartTimeRef = useRef<number>(0);
+  const etaRef = useRef<ScanEta>(new ScanEta());
+  const etaEndsAtRef = useRef<number | null>(null);
   // Set once the first batch (the most recent ~500 photos) is in, so the
   // full-screen scanning gauge can get out of the way immediately instead of
   // blocking on the whole gallery. Non-null while later batches keep
@@ -148,6 +140,23 @@ export const DashboardScreen: React.FC<Props> = ({ onSmartClean, onFullscreenTog
       isMountedRef.current = false;
     };
   }, []);
+
+  // Short "scan finished" notice: shown for a few seconds when a background scan that
+  // was visible ends, so people know the gallery is fully analysed.
+  const [doneNotice, setDoneNotice] = useState(false);
+  const wasScanningRef = useRef(false);
+  useEffect(() => {
+    const scanning = !!backgroundBatch || isPhotoScanInProgress();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    if (wasScanningRef.current && !scanning) {
+      setDoneNotice(true);
+      timer = setTimeout(() => setDoneNotice(false), 3500);
+    }
+    wasScanningRef.current = scanning;
+    return () => {
+      if (timer) clearTimeout(timer);
+    };
+  }, [backgroundBatch, scanResult]);
 
   const loadMedia = async (forceRefresh = false) => {
     const cached = forceRefresh ? null : ScanCacheService.getPhotoScan();
@@ -169,7 +178,8 @@ export const DashboardScreen: React.FC<Props> = ({ onSmartClean, onFullscreenTog
     }
 
     const startTime = Date.now();
-    scanStartTimeRef.current = startTime;
+    etaRef.current.reset();
+    etaEndsAtRef.current = null;
     setEtaSeconds(null);
     if (!cached) setBackgroundBatch(null);
     try {
@@ -191,7 +201,6 @@ export const DashboardScreen: React.FC<Props> = ({ onSmartClean, onFullscreenTog
         (info) => {
           if (!isMountedRef.current) return;
           setScanProgress(info);
-          setEtaSeconds(estimateRemainingSeconds(scanStartTimeRef.current, info.progress));
         },
         forceRefresh,
         (partial, meta: ScanBatchMeta) => {
@@ -204,6 +213,7 @@ export const DashboardScreen: React.FC<Props> = ({ onSmartClean, onFullscreenTog
           setLoading(false);
           setRefreshing(false);
           setBackgroundBatch(meta.isFinal ? null : { scanned: meta.scannedAssets, total: meta.totalAssets });
+          applyScanEta(meta);
         }
       );
 
@@ -233,6 +243,44 @@ export const DashboardScreen: React.FC<Props> = ({ onSmartClean, onFullscreenTog
       }
     }
   };
+
+
+  /** Feeds one batch report into the ETA and starts its countdown from there. */
+  const applyScanEta = (meta: ScanBatchMeta) => {
+    if (meta.isFinal) {
+      etaEndsAtRef.current = null;
+      setEtaSeconds(null);
+      return;
+    }
+    const remainingMs = etaRef.current.update(meta.scannedAssets, meta.totalAssets, Date.now());
+    etaEndsAtRef.current = remainingMs === null ? null : Date.now() + remainingMs;
+    setEtaSeconds(remainingMs === null ? null : Math.max(1, Math.ceil(remainingMs / 1000)));
+  };
+
+  useEffect(() => {
+    return subscribeScanBatch((partial, meta) => {
+      if (!isMountedRef.current) return;
+      setScanResult(partial);
+      if (meta.isFinal) {
+        setBackgroundBatch(null);
+      } else {
+        setBackgroundBatch({ scanned: meta.scannedAssets, total: meta.totalAssets });
+      }
+      applyScanEta(meta);
+    });
+  }, []);
+
+  // Countdown between batch reports: once a second, subtract elapsed time from
+  // the last projected end. Hides itself when it reaches zero, while a batch is still pending.
+  useEffect(() => {
+    const id = setInterval(() => {
+      const endsAt = etaEndsAtRef.current;
+      if (endsAt === null) return;
+      const seconds = Math.ceil((endsAt - Date.now()) / 1000);
+      setEtaSeconds(seconds > 0 ? seconds : null);
+    }, 1000);
+    return () => clearInterval(id);
+  }, []);
 
   useEffect(() => {
     loadMedia(false);
@@ -297,20 +345,29 @@ export const DashboardScreen: React.FC<Props> = ({ onSmartClean, onFullscreenTog
 
         {/* The rest of the gallery keeps scanning quietly after the first
             batch is shown — this is the only sign of that happening. */}
-        {!loading && backgroundBatch && (
-          <Animated.View entering={FadeInDown.duration(300)} style={styles.backgroundScanBanner}>
-            <RefreshCw color={colors.primary} size={13} />
+        {!loading && (backgroundBatch || isPhotoScanInProgress()) && (
+          <Animated.View entering={enter(FadeInDown.duration(300))} style={styles.backgroundScanBanner}>
+            <ActivityIndicator size="small" color={colors.primary} />
             <Text style={styles.backgroundScanText}>
-              {t('dashboard.status.background_scanning', {
-                scanned: backgroundBatch.scanned,
-                total: backgroundBatch.total,
-              })}
+              {backgroundBatch
+                ? t('dashboard.status.background_scanning', {
+                    scanned: backgroundBatch.scanned,
+                    total: backgroundBatch.total,
+                  })
+                : t('dashboard.status.scanning')}
             </Text>
           </Animated.View>
         )}
 
+        {!loading && doneNotice && (
+          <Animated.View entering={enter(FadeInDown.duration(300))} style={styles.backgroundScanBanner}>
+            <CheckCircle2 color={colors.successMint} size={16} strokeWidth={2.4} />
+            <Text style={styles.backgroundScanText}>{t('dashboard.status.background_done')}</Text>
+          </Animated.View>
+        )}
+
         {loading ? (
-          <Animated.View entering={FadeIn.duration(400)} style={styles.scannerCenterContainer}>
+          <Animated.View entering={enter(FadeIn.duration(400))} style={styles.scannerCenterContainer}>
             <GlassPanel
               borderRadius={36}
               style={styles.scannerCard}
@@ -404,7 +461,7 @@ export const DashboardScreen: React.FC<Props> = ({ onSmartClean, onFullscreenTog
             }
           >
             {/* Hero Gauge Section */}
-            <Animated.View entering={FadeInUp.duration(600).delay(100).springify()}>
+            <Animated.View entering={enter(FadeInUp.duration(600).delay(100).springify())}>
               <GlassPanel
                 style={styles.heroSection}
                 contentStyle={styles.heroContent}
@@ -418,7 +475,7 @@ export const DashboardScreen: React.FC<Props> = ({ onSmartClean, onFullscreenTog
 
                 {/* Circular Glass Ring Gauge */}
                 <View style={styles.gaugeContainer}>
-                  <CircularGauge value={sizeParts.value} unit={sizeParts.unit} size={210} strokeWidth={12} />
+                  <CircularGauge value={sizeParts.value} unit={sizeParts.unit} size={96} strokeWidth={7} />
                 </View>
 
                 <Text style={styles.heroDescription}>
@@ -460,9 +517,11 @@ export const DashboardScreen: React.FC<Props> = ({ onSmartClean, onFullscreenTog
               </GlassPanel>
             </Animated.View>
 
+            <AdBanner placement="clean_hero" />
+
             {/* Android 14/15 Limited Gallery Access Warning Banner */}
             {isLimitedAccess && (
-              <Animated.View entering={FadeInDown.duration(400)} style={styles.limitedBannerContainer}>
+              <Animated.View entering={enter(FadeInDown.duration(400))} style={styles.limitedBannerContainer}>
                 <TouchableOpacity
                   activeOpacity={0.88}
                   onPress={() => {
@@ -537,6 +596,9 @@ export const DashboardScreen: React.FC<Props> = ({ onSmartClean, onFullscreenTog
                 />
               </View>
             </View>
+
+            <CategoryShortcuts onOpen={(assets, title) => onSmartClean(assets, title)} />
+
           </ScrollView>
         )}
 
@@ -566,14 +628,20 @@ const styles = StyleSheet.create({
   backgroundScanBanner: {
     flexDirection: 'row',
     alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
-    paddingVertical: 6,
+    alignSelf: 'center',
+    gap: 8,
+    paddingVertical: 7,
+    paddingHorizontal: 16,
+    borderRadius: radius.pill,
+    backgroundColor: alpha(colors.primary, 0.1),
+    borderWidth: 1,
+    borderColor: alpha(colors.primary, 0.25),
+    marginVertical: 8,
   },
   backgroundScanText: {
-    fontSize: 11,
+    fontSize: 12.5,
     fontWeight: '700',
-    color: colors.textMuted,
+    color: colors.primary,
   },
   safeArea: {
     flex: 1,
@@ -600,25 +668,28 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     marginLeft: 7,
   },
+  scanAdBanner: {
+    marginVertical: 14,
+  },
   heroSection: {
-    borderRadius: 32,
-    marginBottom: 20,
+    borderRadius: 24,
+    marginBottom: 10,
   },
   heroContent: {
     alignItems: 'center',
-    paddingVertical: 24,
-    paddingHorizontal: 20,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
   },
   heroEyebrow: {
     fontSize: 12,
     fontWeight: '700',
     color: colors.textSecondary,
     textTransform: 'uppercase',
-    letterSpacing: 2.5,
-    marginBottom: 20,
+    letterSpacing: 2,
+    marginBottom: 10,
   },
   gaugeContainer: {
-    marginBottom: 20,
+    marginBottom: 10,
   },
   heroDescription: {
     fontSize: 14,
@@ -678,7 +749,7 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   bentoCountColumn: {
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: '700',
     textTransform: 'uppercase',
     letterSpacing: 1.2,
@@ -758,7 +829,7 @@ const styles = StyleSheet.create({
   },
   scannerBadgeText: {
     color: colors.primary,
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: '700',
   },
   scannerBadgePillSecondary: {
@@ -774,7 +845,7 @@ const styles = StyleSheet.create({
   },
   scannerBadgeSecondaryText: {
     color: colors.textSecondary,
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: '600',
   },
   limitedBannerContainer: {
@@ -816,7 +887,7 @@ const styles = StyleSheet.create({
     marginBottom: 2,
   },
   limitedBannerDesc: {
-    fontSize: 11,
+    fontSize: 13,
     color: colors.textSecondary,
     lineHeight: 15,
   },

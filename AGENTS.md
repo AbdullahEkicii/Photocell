@@ -153,12 +153,15 @@ canvases.
 
 ## Dev environment gotchas
 - `android/` is generated and gitignored; `expo prebuild --clean` wipes it. The release setup
-  (signing config, keystore copy, R8/shrink flags, proguard rules, lint options) is re-applied by
-  `plugins/withAndroidRelease.js`. Secrets come from the gitignored `keystore.properties` in the
-  project root (`storeFile`, `storePassword`, `keyAlias`, `keyPassword`) or `PHOTOCELL_*` env vars;
-  the keystore is read from `release-key.jks` in the project root. Proguard rules live in
-  `plugins/android/proguard-rules.pro`. Version comes from `app.json` (`version`, `android.versionCode`).
-  Verified: fresh prebuild + `gradlew :app:validateSigningRelease` passes.
+  (signing config, R8/shrink flags, proguard rules, lint options) is re-applied by
+  `plugins/withAndroidRelease.js`. **The signing key lives outside `android/`**: Gradle points at it
+  by absolute path (`MYAPP_RELEASE_STORE_FILE`), so cleaning/regenerating `android/` or running
+  `git clean -fdx` can't delete it. Permanent home: `~/.photocell-signing/` (`release-key.jks` +
+  `keystore.properties` with `storeFile`, `storePassword`, `keyAlias`, `keyPassword`); lookup order is
+  `$PHOTOCELL_SIGNING_DIR`, that folder, then the project root. Back this folder up - the Play
+  upload key can't be recreated. Proguard rules live in `plugins/android/proguard-rules.pro`; version
+  comes from `app.json`. Verified: fresh prebuild with no key in the project + `gradlew
+  :app:validateSigningRelease` passes.
 - Windows JDK: Gradle "Unable to establish loopback connection" → set
   `JAVA_TOOL_OPTIONS=-Djdk.net.unixdomain.tmpdir=C:/jtmp`.
 - Git Bash mangles `/sdcard/...` for adb → `export MSYS_NO_PATHCONV=1`.

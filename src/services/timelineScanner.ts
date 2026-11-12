@@ -122,20 +122,30 @@ async function measureAssetSize(asset: PhotoAsset): Promise<number> {
   return 0;
 }
 
-const MONTH_NAMES_TR = [
-  'Ocak', 'Şubat', 'Mart', 'Nisan', 'Mayıs', 'Haziran',
-  'Temmuz', 'Ağustos', 'Eylül', 'Ekim', 'Kasım', 'Aralık'
-];
-
 const MONTH_NAMES_EN = [
   'January', 'February', 'March', 'April', 'May', 'June',
   'July', 'August', 'September', 'October', 'November', 'December'
 ];
 
+/** Month names in the app language, from the device's own locale data (English if unavailable). */
+function getMonthNames(language: string): string[] {
+  try {
+    const formatter = new Intl.DateTimeFormat(language, { month: 'long' });
+    const names = MONTH_NAMES_EN.map((_, month) => formatter.format(new Date(2000, month, 1)));
+    // A formatter that ignores the locale returns English for every language.
+    return names.every((name) => name && name.length > 0) ? names : MONTH_NAMES_EN;
+  } catch {
+    return MONTH_NAMES_EN;
+  }
+}
+
+/** Language the cached month groups were titled in, so a language change rebuilds them. */
+let cachedTimelineLanguage: string | null = null;
+
 export async function fetchTimelineMonthGroups(language: string = 'tr', forceRefresh = false): Promise<MonthGroup[]> {
   if (!forceRefresh) {
     const cached = ScanCacheService.getTimeline();
-    if (cached) return cached;
+    if (cached && cachedTimelineLanguage === language) return cached;
   }
   try {
     const { status } = await MediaLibrary.requestPermissionsAsync(false, ['photo']);
@@ -148,7 +158,7 @@ export async function fetchTimelineMonthGroups(language: string = 'tr', forceRef
     });
 
     const monthMap = new Map<string, PhotoAsset[]>();
-    const monthNames = language.startsWith('tr') ? MONTH_NAMES_TR : MONTH_NAMES_EN;
+    const monthNames = getMonthNames(language);
 
     for (const asset of page.assets) {
       const date = new Date(asset.creationTime || Date.now());
@@ -220,6 +230,7 @@ export async function fetchTimelineMonthGroups(language: string = 'tr', forceRef
     groups.sort((a, b) => b.id.localeCompare(a.id));
 
     ScanCacheService.setTimeline(groups);
+    cachedTimelineLanguage = language;
     return groups;
   } catch (error) {
     console.error('Failed fetching timeline groups:', error);

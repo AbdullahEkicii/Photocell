@@ -1,4 +1,9 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { notifyPermissionDenied } from '../services/permissionAlerts';
+import { withAdRows } from '../components/ads/adRows';
+import { AdBanner } from '../components/ads/AdBanner';
+import { enter } from '../theme/motion';
+import { AnalyticsService } from '../services/analyticsService';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Alert } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
@@ -37,6 +42,7 @@ export const ContactsCleanerScreen: React.FC<Props> = ({ onBack }) => {
       setLoading(true);
       const res = await scanDeviceContacts();
       setScanResult(res);
+      if (res.isNativeModuleAvailable && !res.hasPermission) notifyPermissionDenied('contacts');
       setSelectedIds(new Set());
     } catch (e) {
       console.warn('Failed scanning contacts:', e);
@@ -93,6 +99,7 @@ export const ContactsCleanerScreen: React.FC<Props> = ({ onBack }) => {
               const allDeleted = await deleteChosenContacts(Array.from(selectedIds));
               if (allDeleted) {
                 Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+                AnalyticsService.trackToolUsed('contacts_cleaner', { outcome: 'deleted' });
                 Alert.alert(t('general.success'), t('contacts_cleaner.success_deleted'));
               } else {
                 Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
@@ -111,6 +118,11 @@ export const ContactsCleanerScreen: React.FC<Props> = ({ onBack }) => {
     );
   };
 
+  const adRows = useMemo(
+    () => withAdRows(filteredItems, (entry) => entry.id, 'contacts_cleaner'),
+    [filteredItems]
+  );
+
   return (
     <View style={styles.container}>
       <AtmosphericBackground />
@@ -122,7 +134,7 @@ export const ContactsCleanerScreen: React.FC<Props> = ({ onBack }) => {
           onRefresh={loadContacts}
         />
 
-        <Animated.View entering={FadeInDown.duration(400).delay(60)} style={styles.filterSection}>
+        <Animated.View entering={enter(FadeInDown.duration(400).delay(60))} style={styles.filterSection}>
           <FilterChips
             value={filter}
             onChange={setFilter}
@@ -166,15 +178,17 @@ export const ContactsCleanerScreen: React.FC<Props> = ({ onBack }) => {
           />
         ) : (
           <FlashList
-            data={filteredItems}
-            keyExtractor={(item) => item.id}
+            data={adRows}
+            keyExtractor={(row) => row.key}
             extraData={selectedIds}
             contentContainerStyle={{
               paddingHorizontal: 20,
               paddingTop: 8,
               paddingBottom: Math.max(100, insets.bottom + 90),
             }}
-            renderItem={({ item }) => {
+            renderItem={({ item: row }) => {
+              if (row.kind === 'ad') return <AdBanner placement={row.placement} />;
+              const item = row.item;
               const isSelected = selectedIds.has(item.id);
               const isEmpty = item.type === 'empty';
 
@@ -239,7 +253,7 @@ export const ContactsCleanerScreen: React.FC<Props> = ({ onBack }) => {
 
         {selectedIds.size > 0 && (
           <Animated.View
-            entering={FadeInUp.springify()}
+            entering={enter(FadeInUp.springify())}
             style={[styles.floatingBar, { bottom: Math.max(20, insets.bottom + 10) }]}
           >
             <TouchableOpacity
@@ -308,12 +322,12 @@ const styles = StyleSheet.create({
     marginBottom: 2,
   },
   contactPhone: {
-    fontSize: 12,
+    fontSize: 13,
     color: colors.textSecondary,
     fontWeight: '600',
   },
   duplicateNotice: {
-    fontSize: 11,
+    fontSize: 13,
     color: colors.warningAmber,
     fontWeight: '700',
     marginTop: 2,

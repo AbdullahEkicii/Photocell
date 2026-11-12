@@ -1,4 +1,8 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { notifyPermissionDenied } from '../services/permissionAlerts';
+import { withAdRows } from '../components/ads/adRows';
+import { AdBanner } from '../components/ads/AdBanner';
+import { enter } from '../theme/motion';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Image, Alert } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
@@ -10,6 +14,8 @@ import * as MediaLibrary from 'expo-media-library/legacy';
 import { FlashList } from '@shopify/flash-list';
 
 import { AtmosphericBackground } from '../components/glass/AtmosphericBackground';
+import { onActionCompleted, showRewardedAd } from '../services/ads/adsService';
+import { FREE_HEAVY_MEDIA_DELETIONS_PER_REWARD } from '../services/ads/adsConfig';
 import { GlassPanel } from '../components/glass/GlassPanel';
 import { ScreenHeader } from '../components/layout/ScreenHeader';
 import { FilterChips } from '../components/layout/FilterChips';
@@ -61,6 +67,7 @@ export const HeavyMediaScreen: React.FC<Props> = ({ onBack }) => {
       const { status } = await MediaLibrary.requestPermissionsAsync(false, ['photo', 'video']);
       if (status !== 'granted') {
         setPermissionDenied(true);
+        notifyPermissionDenied('media');
         return;
       }
       setPermissionDenied(false);
@@ -143,26 +150,43 @@ export const HeavyMediaScreen: React.FC<Props> = ({ onBack }) => {
           onPress: async () => {
             setDeleting(true);
             try {
-              const idsArray = Array.from(selectedIds);
-              const deleted = await deleteMediaAssets(idsArray);
-              if (!deleted) {
-                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
-                Alert.alert(t('general.error'), t('heavy_media.delete_failed'));
-                return;
-              }
+              // Deleted in pairs: after every 2 deletions a rewarded ad is offered before
+              // the next pair. If the user closes the ad, the remaining files are kept.
+              const ids = Array.from(selectedIds);
+              const byId = new Map(items.map((i) => [i.id, i]));
+              let deletedAny = false;
+              for (let i = 0; i < ids.length; i += FREE_HEAVY_MEDIA_DELETIONS_PER_REWARD) {
+                const chunk = ids.slice(i, i + FREE_HEAVY_MEDIA_DELETIONS_PER_REWARD);
+                const deleted = await deleteMediaAssets(chunk);
+                if (!deleted) {
+                  Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
+                  Alert.alert(t('general.error'), t('heavy_media.delete_failed'));
+                  break;
+                }
+                deletedAny = true;
+                let photoBytes = 0;
+                let videoBytes = 0;
+                for (const id of chunk) {
+                  const item = byId.get(id);
+                  if (!item) continue;
+                  if (item.type === 'video') videoBytes += item.sizeBytes;
+                  else photoBytes += item.sizeBytes;
+                }
+                if (photoBytes > 0) recordCleanedPhotos(photoBytes).catch(() => {});
+                if (videoBytes > 0) recordCleanedVideos(videoBytes).catch(() => {});
 
-              // Record each kind against its own counter. Everything used to be
-              // filed under videos, which skewed the report screen.
-              if (selection.photoBytes > 0) {
-                recordCleanedPhotos(selection.photoBytes).catch(() => {});
+                const hasMore = i + FREE_HEAVY_MEDIA_DELETIONS_PER_REWARD < ids.length;
+                if (hasMore) {
+                  const reward = await showRewardedAd('heavy_media_delete');
+                  if (reward === 'dismissed') break;
+                }
               }
-              if (selection.videoBytes > 0) {
-                recordCleanedVideos(selection.videoBytes).catch(() => {});
+              if (deletedAny) {
+                Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
               }
-
-              Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
               setSelectedIds(new Set());
               await loadHeavyMedia();
+              onActionCompleted('heavy_media_delete').catch(() => {});
             } finally {
               setDeleting(false);
             }
@@ -171,6 +195,11 @@ export const HeavyMediaScreen: React.FC<Props> = ({ onBack }) => {
       ]
     );
   };
+
+  const adRows = useMemo(
+    () => withAdRows(filteredItems, (entry) => entry.id, 'heavy_media'),
+    [filteredItems]
+  );
 
   return (
     <View style={styles.container}>
@@ -183,7 +212,7 @@ export const HeavyMediaScreen: React.FC<Props> = ({ onBack }) => {
           onRefresh={loadHeavyMedia}
         />
 
-        <Animated.View entering={FadeInDown.duration(400).delay(60)} style={styles.filterSection}>
+        <Animated.View entering={enter(FadeInDown.duration(400).delay(60))} style={styles.filterSection}>
           <FilterChips
             accent={colors.dangerRose}
             value={filter}
@@ -215,15 +244,17 @@ export const HeavyMediaScreen: React.FC<Props> = ({ onBack }) => {
           />
         ) : (
           <FlashList
-            data={filteredItems}
-            keyExtractor={(item) => item.id}
+            data={adRows}
+            keyExtractor={(row) => row.key}
             extraData={selectedIds}
             contentContainerStyle={{
               paddingHorizontal: 20,
               paddingTop: 8,
               paddingBottom: Math.max(100, insets.bottom + 90),
             }}
-            renderItem={({ item }) => {
+            renderItem={({ item: row }) => {
+              if (row.kind === 'ad') return <AdBanner placement={row.placement} />;
+              const item = row.item;
               const isSelected = selectedIds.has(item.id);
               return (
                 <TouchableOpacity
@@ -269,7 +300,7 @@ export const HeavyMediaScreen: React.FC<Props> = ({ onBack }) => {
 
         {selectedIds.size > 0 && (
           <Animated.View
-            entering={FadeInUp.springify()}
+            entering={enter(FadeInUp.springify())}
             style={[styles.floatingBar, { bottom: Math.max(20, insets.bottom + 10) }]}
           >
             <TouchableOpacity
@@ -349,7 +380,7 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   typeText: {
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: '800',
     color: colors.textPrimary,
   },

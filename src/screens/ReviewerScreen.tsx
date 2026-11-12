@@ -1,10 +1,10 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { enter } from '../theme/motion';
 import {
   View,
   Text,
   StyleSheet,
   Dimensions,
-  Image,
   TouchableOpacity,
   Platform,
   ScrollView,
@@ -14,6 +14,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useTranslation } from 'react-i18next';
 import { GestureDetector, Gesture } from 'react-native-gesture-handler';
 import { LinearGradient } from 'expo-linear-gradient';
+import { Image as ExpoImage } from 'expo-image';
 import { scheduleOnRN } from 'react-native-worklets';
 import Animated, {
   useSharedValue,
@@ -48,9 +49,12 @@ import {
 import * as Haptics from 'expo-haptics';
 
 import { AtmosphericBackground } from '../components/glass/AtmosphericBackground';
+import { onActionCompleted } from '../services/ads/adsService';
 import { GlassPanel } from '../components/glass/GlassPanel';
 import { GlassButton } from '../components/glass/GlassButton';
+import { LiquidGlass } from '../components/glass/LiquidGlass';
 import { colors, alpha, radius } from '../theme/colors';
+import { measureAsset } from '../services/assetSize';
 import { deleteAssets, PhotoAsset } from '../services/mediaScanner';
 import { recordCleanedPhotos, formatByteSize } from '../services/cacheCleaner';
 import { AnalyticsService } from '../services/analyticsService';
@@ -108,6 +112,8 @@ export const ReviewerScreen = ({
 
   const finishReview = useCallback(() => {
     onFinish(Array.from(reviewedIdsRef.current));
+    // A finished review is a natural pause; an interstitial may follow (rationed).
+    if (reviewedIdsRef.current.size > 0) onActionCompleted('review_finished').catch(() => {});
   }, [onFinish]);
 
   const translateX = useSharedValue(0);
@@ -148,6 +154,11 @@ export const ReviewerScreen = ({
 
   const currentAsset = assets[currentIndex];
   const nextAsset = assets[currentIndex + 1];
+
+  // Decode the card behind the current one while the user is still looking at this one.
+  useEffect(() => {
+    if (nextAsset?.uri) ExpoImage.prefetch(nextAsset.uri, 'memory-disk').catch(() => {});
+  }, [nextAsset?.uri]);
 
   // The swipe worklets must not capture the per-render handlers below: they are
   // async closures that go stale, and handing them to the UI runtime is what
@@ -210,7 +221,12 @@ export const ReviewerScreen = ({
     Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(
       () => {}
     );
-    const freed = currentAsset.fileSize || 0;
+    // Category sets arrive without sizes (measuring hundreds up front froze the app), so the
+    // photo being deleted is measured here, one call.
+    let freed = currentAsset.fileSize || 0;
+    if (!freed) {
+      freed = (await measureAsset({ id: currentAsset.id, uri: currentAsset.uri }).catch(() => null))?.size || 0;
+    }
     const success = await deleteAssets([currentAsset]);
     if (success) {
       setSessionFreedBytes((prev) => prev + freed);
@@ -377,7 +393,7 @@ export const ReviewerScreen = ({
       <View style={styles.container}>
         <AtmosphericBackground />
         <Animated.View
-          entering={ZoomIn.duration(600).springify()}
+          entering={enter(ZoomIn.duration(600).springify())}
           style={styles.doneContainer}
         >
           {/* Glowing Ring */}
@@ -453,7 +469,7 @@ export const ReviewerScreen = ({
 
         {/* Top Bar */}
         <SafeAreaView edges={['top']}>
-          <Animated.View entering={FadeInDown.duration(400)} style={styles.topBar}>
+          <Animated.View entering={enter(FadeInDown.duration(400))} style={styles.topBar}>
             <TouchableOpacity
               activeOpacity={0.8}
               onPress={() => {
@@ -496,7 +512,7 @@ export const ReviewerScreen = ({
 
         {/* Group Info Badge */}
         <Animated.View
-          entering={FadeInDown.delay(100)}
+          entering={enter(FadeInDown.delay(100))}
           style={styles.groupedHeaderBadge}
         >
           <View style={styles.groupedBadgeLeft}>
@@ -543,20 +559,22 @@ export const ReviewerScreen = ({
                   ]}
                 >
                   <View style={styles.groupCardInner}>
-                    <Image
+                    <ExpoImage
                       source={{ uri: asset.uri }}
                       style={styles.groupCardImage}
-                      resizeMethod="resize"
-                      resizeMode="cover"
+                      contentFit="cover"
+                      cachePolicy="memory-disk"
+                      recyclingKey={asset.id}
+                      transition={0}
                     />
 
                     {/* Best Tag */}
                     {isBest && (
                       <View style={styles.bestBadge}>
                         <Star
-                          color="#F59E0B"
+                          color={colors.warningAmber}
                           size={12}
-                          fill="#F59E0B"
+                          fill={colors.warningAmber}
                           style={{ marginRight: 4 }}
                         />
                         <Text style={styles.bestBadgeText}>{t('reviewer.best_badge')}</Text>
@@ -645,7 +663,7 @@ export const ReviewerScreen = ({
 
         {/* Action Controls for Grouped Mode */}
         <Animated.View
-          entering={FadeInUp.delay(200).springify()}
+          entering={enter(FadeInUp.delay(200).springify())}
           style={[
             styles.groupedActionsContainer,
             { paddingBottom: Math.max(16, insets.bottom + 8) },
@@ -760,11 +778,12 @@ export const ReviewerScreen = ({
 
             {/* Immersive Image Viewer */}
             <View style={styles.fullscreenImageContainer}>
-              <Image
+              <ExpoImage
                 source={{ uri: fullscreenAsset.uri }}
                 style={styles.fullscreenImage}
-                resizeMethod="resize"
-                resizeMode="contain"
+                contentFit="contain"
+                cachePolicy="memory-disk"
+                transition={120}
               />
             </View>
 
@@ -823,7 +842,7 @@ export const ReviewerScreen = ({
 
       {/* Top Header Bar */}
       <SafeAreaView edges={['top']}>
-        <Animated.View entering={FadeInDown.duration(400)} style={styles.topBar}>
+        <Animated.View entering={enter(FadeInDown.duration(400))} style={styles.topBar}>
           <TouchableOpacity
             activeOpacity={0.8}
             onPress={() => {
@@ -877,11 +896,13 @@ export const ReviewerScreen = ({
           {/* BACK CARD */}
           {nextAsset && (
             <Animated.View style={[styles.card, styles.backCard, backCardStyle]}>
-              <Image
+              <ExpoImage
                 source={{ uri: nextAsset.uri }}
                 style={styles.image}
-                resizeMethod="resize"
-                resizeMode="cover"
+                contentFit="cover"
+                cachePolicy="memory-disk"
+                recyclingKey={nextAsset.id}
+                transition={0}
               />
             </Animated.View>
           )}
@@ -895,11 +916,13 @@ export const ReviewerScreen = ({
                   onPress={() => setFullscreenAsset(currentAsset)}
                   style={{ flex: 1 }}
                 >
-                  <Image
+                  <ExpoImage
                     source={{ uri: currentAsset.uri }}
                     style={styles.image}
-                    resizeMethod="resize"
-                    resizeMode="cover"
+                    contentFit="cover"
+                    cachePolicy="memory-disk"
+                    recyclingKey={currentAsset.id}
+                    transition={0}
                   />
 
                   {/* OVERLAYS */}
@@ -977,57 +1000,43 @@ export const ReviewerScreen = ({
 
       {/* Redesigned Bottom Action Pill Buttons (SİL / TUT) */}
       <Animated.View
-        entering={FadeInUp.delay(350).springify()}
+        entering={enter(FadeInUp.delay(350).springify())}
         style={[
           styles.actionsRow,
           { paddingBottom: Math.max(16, insets.bottom + 8) },
         ]}
       >
-        {/* DELETE BUTTON PILL */}
+        {/* The two primary controls are glass (functional layer); the photo card stays plain. */}
         <TouchableOpacity
-          style={[
-            styles.bigActionPill,
-            styles.bigDeletePill,
-            isProcessing && styles.actionButtonDisabled,
-          ]}
+          style={[styles.glassPillTouch, isProcessing && styles.actionButtonDisabled]}
           onPress={triggerSwipeLeft}
           activeOpacity={0.82}
           disabled={isProcessing}
+          accessibilityRole="button"
+          accessibilityLabel={t('reviewer.action_delete')}
         >
-          <View style={styles.actionIconRingDelete}>
-            <Trash2
-              color={colors.dangerRose}
-              size={22}
-              strokeWidth={2.6}
-            />
-          </View>
-          <Text style={styles.actionPillTextDelete}>
-            {t('reviewer.action_delete')}
-          </Text>
+          <LiquidGlass blur="frosted" borderRadius={29} contentStyle={styles.glassPillContent}>
+            <View style={styles.actionIconRingDelete}>
+              <Trash2 color={colors.dangerRose} size={22} strokeWidth={2.6} />
+            </View>
+            <Text style={styles.actionPillTextDelete}>{t('reviewer.action_delete')}</Text>
+          </LiquidGlass>
         </TouchableOpacity>
 
-        {/* KEEP BUTTON PILL */}
         <TouchableOpacity
-          style={[
-            styles.bigActionPill,
-            styles.bigKeepPill,
-            isProcessing && styles.actionButtonDisabled,
-          ]}
+          style={[styles.glassPillTouch, isProcessing && styles.actionButtonDisabled]}
           onPress={triggerSwipeRight}
           activeOpacity={0.82}
           disabled={isProcessing}
+          accessibilityRole="button"
+          accessibilityLabel={t('reviewer.action_keep')}
         >
-          <View style={styles.actionIconRingKeep}>
-            <Heart
-              color={colors.successMint}
-              fill={colors.successMint}
-              size={22}
-              strokeWidth={2.4}
-            />
-          </View>
-          <Text style={styles.actionPillTextKeep}>
-            {t('reviewer.action_keep')}
-          </Text>
+          <LiquidGlass blur="frosted" borderRadius={29} contentStyle={styles.glassPillContent}>
+            <View style={styles.actionIconRingKeep}>
+              <Heart color={colors.successMint} fill={colors.successMint} size={22} strokeWidth={2.4} />
+            </View>
+            <Text style={styles.actionPillTextKeep}>{t('reviewer.action_keep')}</Text>
+          </LiquidGlass>
         </TouchableOpacity>
       </Animated.View>
 
@@ -1064,7 +1073,7 @@ const styles = StyleSheet.create({
   },
   eyebrowText: {
     color: colors.primary,
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '800',
     letterSpacing: 1.2,
     textTransform: 'uppercase',
@@ -1092,7 +1101,7 @@ const styles = StyleSheet.create({
   },
   fullscreenHintText: {
     color: colors.primary,
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '700',
     letterSpacing: 0.5,
   },
@@ -1117,7 +1126,7 @@ const styles = StyleSheet.create({
     overflow: 'hidden',
     borderWidth: 1,
     borderColor: colors.border,
-    shadowColor: '#0F172A',
+    shadowColor: colors.textPrimary,
     shadowOffset: { width: 0, height: 16 },
     shadowOpacity: 0.16,
     shadowRadius: 28,
@@ -1173,7 +1182,7 @@ const styles = StyleSheet.create({
   blurBadgeText: {
     color: colors.accent,
     fontWeight: '800',
-    fontSize: 12,
+    fontSize: 13,
   },
   emptyCard: {
     flex: 1,
@@ -1229,6 +1238,18 @@ const styles = StyleSheet.create({
     paddingHorizontal: 24,
     paddingTop: 14,
     gap: 16,
+  },
+  glassPillTouch: {
+    flex: 1,
+    maxWidth: 165,
+    height: 58,
+  },
+  glassPillContent: {
+    height: 58,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 16,
   },
   bigActionPill: {
     flex: 1,
@@ -1335,7 +1356,7 @@ const styles = StyleSheet.create({
   },
   fullscreenSizeText: {
     color: '#FFFFFF',
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '800',
   },
   fullscreenImageContainer: {
@@ -1384,7 +1405,7 @@ const styles = StyleSheet.create({
   },
   groupedBadgeSub: {
     color: colors.textMuted,
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '600',
   },
   sideBySideContainer: {
@@ -1433,7 +1454,7 @@ const styles = StyleSheet.create({
   },
   bestBadgeText: {
     color: '#FFFFFF',
-    fontSize: 10,
+    fontSize: 13,
     fontWeight: '900',
     letterSpacing: 0.5,
   },
@@ -1455,12 +1476,12 @@ const styles = StyleSheet.create({
   },
   statusPillTextDelete: {
     color: '#FFF',
-    fontSize: 10,
+    fontSize: 13,
     fontWeight: '800',
   },
   statusPillTextKeep: {
     color: '#FFF',
-    fontSize: 10,
+    fontSize: 13,
     fontWeight: '800',
   },
   expandButton: {
@@ -1491,7 +1512,7 @@ const styles = StyleSheet.create({
   },
   cardInfoText: {
     color: 'rgba(255, 255, 255, 0.92)',
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: '700',
   },
   checkOverlayIcon: {
@@ -1532,7 +1553,7 @@ const styles = StyleSheet.create({
   },
   presetButtonText: {
     color: colors.primary,
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '800',
   },
   presetButtonSecondary: {
@@ -1548,7 +1569,7 @@ const styles = StyleSheet.create({
   },
   presetButtonSecondaryText: {
     color: colors.textSecondary,
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '800',
   },
   confirmGroupButton: {

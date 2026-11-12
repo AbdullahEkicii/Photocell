@@ -169,7 +169,7 @@ const styles = StyleSheet.create({
     borderRadius: 20,
   },
   badgeText: {
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '800',
     color: colors.primary,
     letterSpacing: 0.5,

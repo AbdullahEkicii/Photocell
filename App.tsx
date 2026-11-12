@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { BackHandler } from 'react-native';
+import { initMotionTier } from './src/theme/motion';
+import { AppState, BackHandler } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import { NavigationBar } from 'expo-navigation-bar';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
@@ -24,18 +25,26 @@ import { PhotoAsset, checkMediaPermissionsStatus, prewarmPhotoScan } from './src
 import { addReviewedAssets } from './src/services/timelineScanner';
 import { ScanCacheService } from './src/services/scanCacheService';
 import { isOnboardingCompleted, markOnboardingCompleted } from './src/services/onboardingService';
+import { restoreSavedLanguage } from './src/services/languageService';
+import { initGlassSettings } from './src/components/glass/glassSettings';
+import { GlassTarget, GlassTargetProvider } from './src/components/glass/GlassTarget';
+import { initializeAds } from './src/services/ads/adsService';
 import { OnboardingScreen } from './src/components/onboarding/OnboardingScreen';
 import {
   initializeNotifications,
   getNotificationSettings,
 } from './src/services/notificationService';
 import { AnalyticsService, ScreenName } from './src/services/analyticsService';
+import { usageSessionStart, usageSessionEnd, shouldAskForReview, markReviewAsked } from './src/services/usageService';
+import { ReviewPrompt } from './src/components/review/ReviewPrompt';
 import * as Notifications from 'expo-notifications';
 
-type ToolSubScreen = Exclude<ToolScreenType, never>;
-type AppScreen = TabType | 'reviewer' | ToolSubScreen;
+initMotionTier();
 
-const TAB_SCREENS: TabType[] = ['home', 'photos', 'timeline', 'tools', 'vault', 'report'];
+type ToolSubScreen = Exclude<ToolScreenType, never>;
+type AppScreen = TabType | 'reviewer' | 'report' | ToolSubScreen;
+
+const TAB_SCREENS: TabType[] = ['home', 'photos', 'timeline', 'tools', 'vault'];
 
 /**
  * Screens pushed on top of a tab. They hide the bottom bar and own a back
@@ -44,6 +53,7 @@ const TAB_SCREENS: TabType[] = ['home', 'photos', 'timeline', 'tools', 'vault', 
  */
 const SUB_SCREENS: AppScreen[] = [
   'reviewer',
+  'report',
   'photo_compressor',
   'videos',
   'exif_cleaner',
@@ -91,6 +101,25 @@ interface ReviewRequest {
 
 export default function App() {
   const [showSplash, setShowSplash] = useState<boolean>(true);
+  const [reviewVisible, setReviewVisible] = useState<boolean>(false);
+
+  // Foreground time is what the review prompt measures; see usageService.
+  useEffect(() => {
+    usageSessionStart();
+    const sub = AppState.addEventListener('change', (next) => {
+      if (next === 'active') {
+        usageSessionStart();
+      } else if (next === 'background' || next === 'inactive') {
+        usageSessionEnd().catch(() => {});
+      }
+    });
+    return () => {
+      sub.remove();
+      usageSessionEnd().catch(() => {});
+    };
+  }, []);
+
+
   const [currentScreen, setCurrentScreen] = useState<AppScreen>('home');
   const [previousTab, setPreviousTab] = useState<TabType>('home');
   const [review, setReview] = useState<ReviewRequest | null>(null);
@@ -98,6 +127,34 @@ export default function App() {
   // buttons, the navigation bar are hidden); Settings can turn it off.
   const [isFullScreen, setIsFullScreen] = useState<boolean>(true);
   const [onboarding, setOnboarding] = useState<'checking' | 'needed' | 'done'>('checking');
+
+  // Once the app is in use (and onboarding is done), check whether to ask for a rating.
+  useEffect(() => {
+    if (showSplash || onboarding !== 'done') return;
+    const timer = setTimeout(() => {
+      shouldAskForReview()
+        .then((ask) => {
+          if (ask) {
+            markReviewAsked().catch(() => {});
+            setReviewVisible(true);
+          }
+        })
+        .catch(() => {});
+    }, 4000);
+    return () => clearTimeout(timer);
+    // Checked when the splash ends and whenever onboarding state changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showSplash, onboarding]);
+
+  // Applies the language picked in the app last time (the device language
+  // is the default until the user chooses one).
+  useEffect(() => {
+    restoreSavedLanguage().catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    initGlassSettings().catch(() => {});
+  }, []);
 
   useEffect(() => {
     isOnboardingCompleted()
@@ -141,6 +198,9 @@ export default function App() {
     if (onboarding !== 'done') return;
 
     initializeNotifications().catch(() => {});
+    // Ads start only now: onboarding is done, and the consent form (where the law
+    // requires one) is shown before any ad request.
+    initializeAds().catch(() => {});
 
     // Start the gallery scan quietly in the background as soon as the app
     // opens, so it's largely or fully done by the time the user actually taps
@@ -249,6 +309,11 @@ export default function App() {
   }, []);
 
   const goBackToTools = useCallback(() => setCurrentScreen('tools'), []);
+  const goBackToHome = useCallback(() => setCurrentScreen('home'), []);
+  const openReport = useCallback(() => {
+    setPreviousTab('home');
+    setCurrentScreen('report');
+  }, []);
 
   // Android hardware/gesture back: leave the sub-screen instead of the app.
   useEffect(() => {
@@ -256,13 +321,15 @@ export default function App() {
     const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
       if (currentScreen === 'reviewer') {
         handleReviewFinished([]);
+      } else if (currentScreen === 'report') {
+        goBackToHome();
       } else {
         goBackToTools();
       }
       return true;
     });
     return () => subscription.remove();
-  }, [isSubScreen, currentScreen, handleReviewFinished, goBackToTools]);
+  }, [isSubScreen, currentScreen, handleReviewFinished, goBackToTools, goBackToHome]);
 
   const activeTab: TabType = isSubScreen ? previousTab : (currentScreen as TabType);
 
@@ -273,6 +340,7 @@ export default function App() {
           <HomeScreen
             key={`home-${galleryVersion}`}
             onNavigate={handleSelectTab}
+            onOpenReport={openReport}
             onFullscreenToggle={setIsFullScreen}
           />
         );
@@ -308,7 +376,7 @@ export default function App() {
       case 'vault':
         return <VaultScreen />;
       case 'report':
-        return <ReportScreen key={`report-${galleryVersion}`} />;
+        return <ReportScreen key={`report-${galleryVersion}`} onBack={goBackToHome} />;
       case 'reviewer':
         return (
           <ReviewerScreen
@@ -319,7 +387,13 @@ export default function App() {
           />
         );
       default:
-        return <HomeScreen onNavigate={handleSelectTab} onFullscreenToggle={setIsFullScreen} />;
+        return (
+          <HomeScreen
+            onNavigate={handleSelectTab}
+            onOpenReport={openReport}
+            onFullscreenToggle={setIsFullScreen}
+          />
+        );
     }
   };
 
@@ -331,17 +405,20 @@ export default function App() {
             button-navigation phones) so the app draws over that strip; a swipe
             from the edge brings it back briefly. */}
         <NavigationBar hidden={isFullScreen} style="dark" />
+        <ReviewPrompt visible={reviewVisible} onClose={() => setReviewVisible(false)} />
         {showSplash ? (
           <CustomSplashScreen onFinish={() => setShowSplash(false)} />
         ) : onboarding === 'checking' ? null : onboarding === 'needed' ? (
           <OnboardingScreen onFinish={handleOnboardingFinished} />
         ) : (
-          <>
-            {renderScreen()}
+          <GlassTargetProvider>
+            {/* Screens live inside the blur target so the glass tab bar, drawn next
+                to it, blurs content that scrolls beneath it. */}
+            <GlassTarget style={{ flex: 1 }}>{renderScreen()}</GlassTarget>
             {!isSubScreen && (
               <BottomNavBar activeTab={activeTab} onSelectTab={handleSelectTab} />
             )}
-          </>
+          </GlassTargetProvider>
         )}
       </GestureHandlerRootView>
     </SafeAreaProvider>

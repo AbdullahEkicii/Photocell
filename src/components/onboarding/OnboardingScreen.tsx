@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
+import { enter } from '../../theme/motion';
 import {
   View,
   Text,
@@ -33,9 +34,12 @@ import {
 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 
+import { resolveSupportedLanguage } from '../../i18n/languages';
+import { LanguagePickerModal } from '../settings/LanguagePickerModal';
 import { AtmosphericBackground } from '../glass/AtmosphericBackground';
 import { GlassPanel } from '../glass/GlassPanel';
 import { colors, alpha, radius } from '../../theme/colors';
+import { AnalyticsService } from '../../services/analyticsService';
 import { checkMediaPermissionsStatus, requestFullMediaAccess } from '../../services/mediaScanner';
 import {
   getNotificationPermissionState,
@@ -76,7 +80,7 @@ const Feature: React.FC<{
   description: string;
   delay: number;
 }> = ({ icon: Icon, accent, title, description, delay }) => (
-  <Animated.View entering={FadeInDown.duration(420).delay(delay)}>
+  <Animated.View entering={enter(FadeInDown.duration(420).delay(delay))}>
     <GlassPanel
       borderRadius={radius.card}
       borderColor={alpha(accent, 0.2)}
@@ -136,7 +140,8 @@ export const OnboardingScreen: React.FC<Props> = ({ onFinish }) => {
   const [gallery, setGallery] = useState<GalleryState>('checking');
   const [notifications, setNotifications] = useState<NotificationState>('checking');
   const [requesting, setRequesting] = useState<boolean>(false);
-  const isTurkish = (i18n.language || 'tr').startsWith('tr');
+  const [languagePickerVisible, setLanguagePickerVisible] = useState(false);
+  const languageCode = resolveSupportedLanguage(i18n.language).toUpperCase();
 
   const refreshStatuses = useCallback(async () => {
     try {
@@ -153,7 +158,12 @@ export const OnboardingScreen: React.FC<Props> = ({ onFinish }) => {
 
   useEffect(() => {
     refreshStatuses();
+    AnalyticsService.trackOnboarding('started');
   }, [refreshStatuses]);
+
+  useEffect(() => {
+    AnalyticsService.trackOnboarding('step_viewed', step);
+  }, [step]);
 
   // Coming back from the system Settings screen: pick up whatever changed.
   const appStateRef = useRef(AppState.currentState);
@@ -179,9 +189,9 @@ export const OnboardingScreen: React.FC<Props> = ({ onFinish }) => {
     return () => sub.remove();
   }, [step]);
 
-  const toggleLanguage = () => {
+  const openLanguagePicker = () => {
     Haptics.selectionAsync().catch(() => {});
-    i18n.changeLanguage(isTurkish ? 'en' : 'tr');
+    setLanguagePickerVisible(true);
   };
 
   const needsSettings = gallery === 'limited' || gallery === 'blocked';
@@ -201,14 +211,22 @@ export const OnboardingScreen: React.FC<Props> = ({ onFinish }) => {
       return;
     }
     if (primaryMode === 'start') {
+      AnalyticsService.trackOnboarding('completed');
       onFinish();
       return;
     }
 
     setRequesting(true);
     try {
-      if (gallery === 'denied') await requestFullMediaAccess().catch(() => null);
-      if (notifications === 'denied') await requestNotificationPermission();
+      if (gallery === 'denied') {
+        await requestFullMediaAccess().catch(() => null);
+        const after = await checkMediaPermissionsStatus().catch(() => null);
+        AnalyticsService.trackPermission('gallery', after?.granted ? 'granted' : after?.isLimited ? 'limited' : 'denied');
+      }
+      if (notifications === 'denied') {
+        await requestNotificationPermission();
+        AnalyticsService.trackPermission('notifications', (await getNotificationPermissionState()));
+      }
     } finally {
       await refreshStatuses();
       setRequesting(false);
@@ -264,12 +282,12 @@ export const OnboardingScreen: React.FC<Props> = ({ onFinish }) => {
           </View>
           <TouchableOpacity
             activeOpacity={0.75}
-            onPress={toggleLanguage}
+            onPress={openLanguagePicker}
             style={styles.langButton}
             accessibilityRole="button"
           >
             <Globe color={colors.primary} size={15} strokeWidth={2.2} />
-            <Text style={styles.langText}>{isTurkish ? 'TR' : 'EN'}</Text>
+            <Text style={styles.langText}>{languageCode}</Text>
           </TouchableOpacity>
         </View>
 
@@ -277,7 +295,7 @@ export const OnboardingScreen: React.FC<Props> = ({ onFinish }) => {
           {step === 0 ? (
             <Animated.View
               key="step-welcome"
-              entering={FadeInRight.duration(300)}
+              entering={enter(FadeInRight.duration(300))}
               exiting={FadeOutLeft.duration(180)}
               style={styles.stepWrap}
             >
@@ -327,7 +345,7 @@ export const OnboardingScreen: React.FC<Props> = ({ onFinish }) => {
           ) : (
             <Animated.View
               key="step-permissions"
-              entering={FadeInRight.duration(300)}
+              entering={enter(FadeInRight.duration(300))}
               exiting={FadeOutLeft.duration(180)}
               style={styles.stepWrap}
             >
@@ -335,7 +353,7 @@ export const OnboardingScreen: React.FC<Props> = ({ onFinish }) => {
               <Text style={styles.subtitle}>{t('onboarding.permissions_subtitle')}</Text>
 
               <View style={styles.list}>
-                <Animated.View entering={FadeInDown.duration(420).delay(100)}>
+                <Animated.View entering={enter(FadeInDown.duration(420).delay(100))}>
                   <GlassPanel
                     borderRadius={radius.card}
                     borderColor={alpha(gChip.tone === 'good' ? colors.successMint : colors.primary, 0.25)}
@@ -372,7 +390,7 @@ export const OnboardingScreen: React.FC<Props> = ({ onFinish }) => {
                   </GlassPanel>
                 </Animated.View>
 
-                <Animated.View entering={FadeInDown.duration(420).delay(180)}>
+                <Animated.View entering={enter(FadeInDown.duration(420).delay(180))}>
                   <GlassPanel
                     borderRadius={radius.card}
                     borderColor={colors.border}
@@ -433,7 +451,10 @@ export const OnboardingScreen: React.FC<Props> = ({ onFinish }) => {
           {step === 1 && primaryMode !== 'start' ? (
             <TouchableOpacity
               activeOpacity={0.7}
-              onPress={onFinish}
+              onPress={() => {
+                AnalyticsService.logEvent('onboarding_skipped', { step });
+                onFinish();
+              }}
               style={styles.skipButton}
               accessibilityRole="button"
             >
@@ -444,6 +465,11 @@ export const OnboardingScreen: React.FC<Props> = ({ onFinish }) => {
           )}
         </View>
       </SafeAreaView>
+
+      <LanguagePickerModal
+        visible={languagePickerVisible}
+        onClose={() => setLanguagePickerVisible(false)}
+      />
     </View>
   );
 };
@@ -493,7 +519,7 @@ const styles = StyleSheet.create({
   },
   langText: {
     color: colors.primary,
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '800',
     letterSpacing: 0.5,
   },
@@ -564,7 +590,7 @@ const styles = StyleSheet.create({
     letterSpacing: -0.2,
   },
   featureDesc: {
-    fontSize: 12.5,
+    fontSize: 13.5,
     color: colors.textSecondary,
     lineHeight: 17,
     marginTop: 2,
@@ -580,13 +606,13 @@ const styles = StyleSheet.create({
     marginTop: 2,
   },
   requiredText: {
-    fontSize: 11.5,
+    fontSize: 13.5,
     fontWeight: '800',
     color: colors.dangerRose,
     letterSpacing: 0.3,
   },
   permissionDesc: {
-    fontSize: 12.5,
+    fontSize: 13.5,
     color: colors.textSecondary,
     lineHeight: 18,
     marginTop: 12,
@@ -604,7 +630,7 @@ const styles = StyleSheet.create({
   },
   helpText: {
     flex: 1,
-    fontSize: 12,
+    fontSize: 13,
     lineHeight: 17,
     fontWeight: '600',
     color: colors.textPrimary,
@@ -620,7 +646,7 @@ const styles = StyleSheet.create({
     maxWidth: 130,
   },
   chipText: {
-    fontSize: 10.5,
+    fontSize: 13.5,
     fontWeight: '800',
   },
   footer: {

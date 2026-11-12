@@ -1,4 +1,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { notifyPermissionDenied } from '../services/permissionAlerts';
+import { enter } from '../theme/motion';
+import { AnalyticsService } from '../services/analyticsService';
 import {
   View,
   Text,
@@ -9,6 +12,7 @@ import {
   Alert,
   Modal,
   Dimensions,
+  Switch,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
@@ -28,6 +32,8 @@ import {
   Sparkles,
   Check,
   Images,
+  KeyRound,
+  Fingerprint,
 } from 'lucide-react-native';
 import * as Haptics from 'expo-haptics';
 import * as MediaLibrary from 'expo-media-library/legacy';
@@ -46,6 +52,12 @@ import {
   lockPhotoToVault,
   restorePhotoFromVault,
   deleteVaultItem,
+  getVaultLockout,
+  isBiometricAvailable,
+  isBiometricEnabled,
+  setBiometricEnabled,
+  authenticateWithDevice,
+  hasDeviceLock,
   VaultItem,
 } from '../services/vaultService';
 
@@ -64,7 +76,11 @@ export const VaultScreen: React.FC = () => {
   const insets = useSafeAreaInsets();
   const [isUnlocked, setIsUnlocked] = useState<boolean>(false);
   const [isConfiguringPin, setIsConfiguringPin] = useState<boolean>(false);
-  const [pinStep, setPinStep] = useState<'enter' | 'create' | 'confirm'>('enter');
+  const [pinStep, setPinStep] = useState<'enter' | 'create' | 'confirm' | 'change_old'>('enter');
+  // True while the create/confirm steps are replacing an existing PIN, not setting the first one.
+  const [changingPin, setChangingPin] = useState<boolean>(false);
+  const [biometricAvailable, setBiometricAvailable] = useState<boolean>(false);
+  const [biometricOn, setBiometricOn] = useState<boolean>(false);
   const [pinValue, setPinValue] = useState<string>('');
   const [firstPin, setFirstPin] = useState<string>('');
   const [vaultItems, setVaultItems] = useState<VaultItem[]>([]);
@@ -84,6 +100,8 @@ export const VaultScreen: React.FC = () => {
     try {
       setLoading(true);
       const hasPin = await hasVaultPin();
+      setBiometricAvailable(await isBiometricAvailable());
+      setBiometricOn(await isBiometricEnabled());
       if (!hasPin) {
         setIsConfiguringPin(true);
         setPinStep('create');
@@ -99,6 +117,14 @@ export const VaultScreen: React.FC = () => {
   useEffect(() => {
     checkPinStatus();
   }, [checkPinStatus]);
+
+  // Biometric unlock is offered once when the vault opens; the PIN stays as the fallback.
+  useEffect(() => {
+    if (!loading && biometricOn && biometricAvailable && !isConfiguringPin && !isUnlocked) {
+      handleBiometricUnlock();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, biometricOn, biometricAvailable, isConfiguringPin]);
 
   const loadItems = async () => {
     try {
@@ -124,7 +150,12 @@ export const VaultScreen: React.FC = () => {
         if (nextPin === firstPin) {
           await setVaultPin(nextPin);
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
-          Alert.alert(t('general.success'), t('vault.pin_created'));
+          Alert.alert(
+            t('general.success'),
+            changingPin ? t('vault.pin_changed') : t('vault.pin_created')
+          );
+          AnalyticsService.trackVaultAction(changingPin ? 'pin_change' : 'pin_create');
+          setChangingPin(false);
           setIsUnlocked(true);
           setPinValue('');
           await loadItems();
@@ -135,20 +166,97 @@ export const VaultScreen: React.FC = () => {
           setFirstPin('');
           setPinStep('create');
         }
+      } else if (pinStep === 'change_old') {
+        const check = await verifyVaultPin(nextPin);
+        setPinValue('');
+        if (check.ok) {
+          setPinStep('create');
+          setFirstPin('');
+        } else {
+          Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
+          reportFailedPin(check.lockedForMs, t('vault.pin_incorrect'));
+        }
       } else if (pinStep === 'enter') {
-        const isValid = await verifyVaultPin(nextPin);
-        if (isValid) {
+        const check = await verifyVaultPin(nextPin);
+        setPinValue('');
+        if (check.ok) {
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+          AnalyticsService.trackVaultAction('unlock');
           setIsUnlocked(true);
-          setPinValue('');
           await loadItems();
         } else {
           Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
-          Alert.alert(t('general.error'), t('vault.pin_incorrect'));
-          setPinValue('');
+          reportFailedPin(check.lockedForMs, t('vault.pin_incorrect'));
         }
       }
     }
+  };
+
+  /** Shows the wrong-PIN message, or how long the vault is locked for. */
+  const reportFailedPin = (lockedForMs: number, fallback: string) => {
+    if (lockedForMs > 0) {
+      const seconds = Math.ceil(lockedForMs / 1000);
+      const minutes = Math.ceil(seconds / 60);
+      Alert.alert(
+        t('vault.locked_title'),
+        seconds < 120
+          ? t('vault.locked_seconds', { count: seconds })
+          : t('vault.locked_minutes', { count: minutes })
+      );
+      return;
+    }
+    Alert.alert(t('general.error'), fallback);
+  };
+
+  const handleBiometricUnlock = async () => {
+    const ok = await authenticateWithDevice(t('vault.unlock_prompt'));
+    if (!ok) return;
+    Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+    AnalyticsService.trackVaultAction('biometric_unlock');
+    setIsUnlocked(true);
+    setPinValue('');
+    await loadItems();
+  };
+
+  const handleToggleBiometric = async (enabled: boolean) => {
+    if (enabled) {
+      const ok = await authenticateWithDevice(t('vault.biometric_confirm_prompt'));
+      if (!ok) return;
+    }
+    await setBiometricEnabled(enabled);
+    setBiometricOn(enabled);
+    AnalyticsService.logEvent('vault_biometric_toggled', { enabled });
+  };
+
+  const handleChangePin = () => {
+    Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
+    setChangingPin(true);
+    setIsUnlocked(false);
+    setPinValue('');
+    setPinStep('change_old');
+  };
+
+  /** Forgot the PIN: the device's own lock (fingerprint, face or screen PIN) proves ownership. */
+  const handleForgotPin = async () => {
+    if (!(await hasDeviceLock())) {
+      Alert.alert(t('vault.forgot_pin_title'), t('vault.forgot_pin_no_lock'));
+      return;
+    }
+    Alert.alert(t('vault.forgot_pin_title'), t('vault.forgot_pin_body'), [
+      { text: t('settings.cancel'), style: 'cancel' },
+      {
+        text: t('vault.forgot_pin_continue'),
+        onPress: async () => {
+          const ok = await authenticateWithDevice(t('vault.reset_prompt'));
+          if (!ok) return;
+          AnalyticsService.trackVaultAction('pin_reset');
+          setChangingPin(true);
+          setPinValue('');
+          setFirstPin('');
+          setPinStep('create');
+        },
+      },
+    ]);
   };
 
   const handleDeleteDigit = () => {
@@ -170,6 +278,7 @@ export const VaultScreen: React.FC = () => {
       if (status !== 'granted') {
         setPickerLoading(false);
         setPickerPermissionDenied(true);
+        notifyPermissionDenied('media');
         return;
       }
       setPickerPermissionDenied(false);
@@ -224,6 +333,7 @@ export const VaultScreen: React.FC = () => {
       }
 
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success).catch(() => {});
+      AnalyticsService.trackToolUsed('vault_lock', { count: locked });
       Alert.alert(t('general.success'), t('vault.lock_success', { count: locked }));
       setPickerVisible(false);
       setSelectedPickerIds(new Set());
@@ -269,6 +379,7 @@ export const VaultScreen: React.FC = () => {
 
   const handleLockVault = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
+    AnalyticsService.trackVaultAction('lock');
     setIsUnlocked(false);
     setPinValue('');
     setSelectedItem(null);
@@ -299,7 +410,7 @@ export const VaultScreen: React.FC = () => {
 
         {!isUnlocked ? (
           /* PIN KEYPAD SCREEN */
-          <Animated.View entering={FadeIn.duration(300)} style={styles.pinContainer}>
+          <Animated.View entering={enter(FadeIn.duration(300))} style={styles.pinContainer}>
             <View style={styles.pinHeader}>
               <View style={styles.lockBadge}>
                 <Lock color={colors.primary} size={30} strokeWidth={2.2} />
@@ -309,6 +420,8 @@ export const VaultScreen: React.FC = () => {
                   ? t('vault.create_pin')
                   : pinStep === 'confirm'
                   ? t('vault.confirm_pin')
+                  : pinStep === 'change_old'
+                  ? t('vault.enter_old_pin')
                   : t('vault.enter_pin')}
               </Text>
               <Text style={styles.pinSubtitle}>{t('vault.subtitle')}</Text>
@@ -334,6 +447,8 @@ export const VaultScreen: React.FC = () => {
                   key={digit}
                   activeOpacity={0.7}
                   onPress={() => handleDigitPress(digit)}
+                  accessibilityRole="button"
+                  accessibilityLabel={digit}
                   style={styles.keyButton}
                 >
                   <Text style={styles.keyText}>{digit}</Text>
@@ -353,16 +468,69 @@ export const VaultScreen: React.FC = () => {
               <TouchableOpacity
                 activeOpacity={0.7}
                 onPress={handleDeleteDigit}
+                accessibilityRole="button"
+                accessibilityLabel={t('general.delete_digit')}
                 style={styles.keyButton}
               >
                 <Delete color={colors.textSecondary} size={24} />
               </TouchableOpacity>
             </View>
+
+            {pinStep === 'enter' && (
+              <View style={styles.pinLinksRow}>
+                {biometricOn && biometricAvailable && (
+                  <TouchableOpacity
+                    activeOpacity={0.7}
+                    onPress={handleBiometricUnlock}
+                    style={styles.linkButton}
+                    accessibilityRole="button"
+                    accessibilityLabel={t('vault.biometric_unlock')}
+                  >
+                    <Fingerprint color={colors.primary} size={18} strokeWidth={2.2} />
+                    <Text style={styles.linkText}>{t('vault.biometric_unlock')}</Text>
+                  </TouchableOpacity>
+                )}
+                <TouchableOpacity
+                  activeOpacity={0.7}
+                  onPress={handleForgotPin}
+                  style={styles.linkButton}
+                  accessibilityRole="button"
+                >
+                  <Text style={styles.linkText}>{t('vault.forgot_pin')}</Text>
+                </TouchableOpacity>
+              </View>
+            )}
           </Animated.View>
         ) : (
           /* UNLOCKED VAULT ALBUM VIEW */
           <View style={{ flex: 1 }}>
-            <Animated.View entering={FadeInDown.delay(100)} style={styles.vaultHeader}>
+            <View style={styles.securityRow}>
+              <TouchableOpacity
+                activeOpacity={0.8}
+                onPress={handleChangePin}
+                style={styles.securityChip}
+                accessibilityRole="button"
+              >
+                <KeyRound color={colors.primary} size={16} strokeWidth={2.2} />
+                <Text style={styles.securityChipText}>{t('vault.change_pin')}</Text>
+              </TouchableOpacity>
+              {biometricAvailable && (
+                <View style={styles.securityChip}>
+                  <Fingerprint color={colors.primary} size={16} strokeWidth={2.2} />
+                  <Text style={styles.securityChipText} numberOfLines={1}>
+                    {t('vault.biometric_label')}
+                  </Text>
+                  <Switch
+                    value={biometricOn}
+                    onValueChange={handleToggleBiometric}
+                    trackColor={{ false: colors.border, true: colors.primary }}
+                    thumbColor="#FFFFFF"
+                  />
+                </View>
+              )}
+            </View>
+
+            <Animated.View entering={enter(FadeInDown.delay(100))} style={styles.vaultHeader}>
               <View>
                 <Text style={styles.vaultTitle}>{t('vault.title')}</Text>
                 <Text style={styles.vaultSubtitle}>
@@ -381,7 +549,7 @@ export const VaultScreen: React.FC = () => {
             </Animated.View>
 
             {vaultItems.length === 0 ? (
-              <Animated.View entering={FadeIn} style={styles.emptyContainer}>
+              <Animated.View entering={enter(FadeIn)} style={styles.emptyContainer}>
                 <GlassPanel borderRadius={28} style={styles.emptyCard} contentStyle={styles.emptyCardContent}>
                   <ShieldCheck color={colors.successMint} size={48} style={{ marginBottom: 14 }} />
                   <Text style={styles.emptyTitle}>{t('vault.empty_vault')}</Text>
@@ -558,6 +726,46 @@ const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
   },
+  pinLinksRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 18,
+  },
+  linkButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    minHeight: 44,
+    paddingHorizontal: 14,
+  },
+  linkText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: colors.primary,
+  },
+  securityRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingTop: 8,
+  },
+  securityChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    minHeight: 40,
+    paddingHorizontal: 12,
+    borderRadius: 20,
+    backgroundColor: alpha(colors.primary, 0.1),
+  },
+  securityChipText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: colors.textPrimary,
+  },
   lockButton: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -571,7 +779,7 @@ const styles = StyleSheet.create({
   },
   lockButtonText: {
     color: colors.dangerRose,
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '800',
   },
   pinContainer: {
@@ -641,7 +849,7 @@ const styles = StyleSheet.create({
     borderColor: colors.border,
     alignItems: 'center',
     justifyContent: 'center',
-    shadowColor: '#0F172A',
+    shadowColor: colors.textPrimary,
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.05,
     shadowRadius: 8,
@@ -718,7 +926,7 @@ const styles = StyleSheet.create({
   },
   itemSizeText: {
     color: '#FFF',
-    fontSize: 10,
+    fontSize: 13,
     fontWeight: '700',
   },
   emptyContainer: {

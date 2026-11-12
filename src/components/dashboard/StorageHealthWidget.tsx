@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { enter } from '../../theme/motion';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Alert } from 'react-native';
 import { useTranslation } from 'react-i18next';
 import Animated, {
@@ -119,7 +120,7 @@ export const StorageHealthWidget: React.FC = () => {
       : colors.dangerRose;
 
   return (
-    <Animated.View entering={FadeInDown.duration(500).delay(120)} style={styles.container}>
+    <Animated.View entering={enter(FadeInDown.duration(500).delay(120))} style={styles.container}>
       <GlassPanel
         borderRadius={radius.panel}
         borderColor={colors.border}
@@ -298,7 +299,7 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   healthText: {
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: '800',
     letterSpacing: 0.3,
   },
@@ -309,12 +310,12 @@ const styles = StyleSheet.create({
     paddingVertical: 18,
   },
   loadingText: {
-    fontSize: 12.5,
+    fontSize: 13.5,
     color: colors.textSecondary,
     fontWeight: '600',
   },
   capacityLine: {
-    fontSize: 12.5,
+    fontSize: 13.5,
     color: colors.textSecondary,
     fontWeight: '600',
     marginBottom: 10,
@@ -348,19 +349,19 @@ const styles = StyleSheet.create({
     borderRadius: 3.5,
   },
   legendLabel: {
-    fontSize: 10.5,
+    fontSize: 13.5,
     color: colors.textMuted,
     fontWeight: '700',
     flexShrink: 1,
   },
   legendValue: {
-    fontSize: 12.5,
+    fontSize: 13.5,
     color: colors.textPrimary,
     fontWeight: '800',
     marginLeft: 12,
   },
   estimateNote: {
-    fontSize: 10.5,
+    fontSize: 13.5,
     color: colors.textMuted,
     fontStyle: 'italic',
     marginBottom: 12,
@@ -379,7 +380,7 @@ const styles = StyleSheet.create({
     paddingVertical: 11,
   },
   boostText: {
-    fontSize: 12.5,
+    fontSize: 13.5,
     fontWeight: '800',
     color: colors.primary,
   },

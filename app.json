@@ -2,18 +2,23 @@
   "expo": {
     "name": "photocell",
     "slug": "photocell",
-    "version": "1.0.8",
-    "orientation": "portrait",
+    "version": "1.2.3",
+    "orientation": "default",
     "icon": "./assets/photocell512px.png",
-    "userInterfaceStyle": "light",
+    "userInterfaceStyle": "automatic",
     "locales": {
       "tr": "./locales/tr.json"
     },
     "ios": {
-      "supportsTablet": true
+      "supportsTablet": true,
+      "bundleIdentifier": "com.abdllhekc.photocell",
+      "buildNumber": "15",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
-      "versionCode": 9,
+      "versionCode": 15,
       "adaptiveIcon": {
         "backgroundColor": "#000000",
         "foregroundImage": "./assets/photocell512px.png"
@@ -42,6 +47,12 @@
         }
       ],
       "expo-video",
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Allow Photocell to use Face ID to unlock your private vault."
+        }
+      ],
       [
         "expo-notifications",
         {

@@ -1,4 +1,5 @@
 import React from 'react';
+import { enter } from '../../theme/motion';
 import { View, Text, StyleSheet, TouchableOpacity } from 'react-native';
 import Animated, { FadeInUp } from 'react-native-reanimated';
 import { ChevronRight } from 'lucide-react-native';
@@ -34,7 +35,7 @@ export const NavCard: React.FC<NavCardProps> = ({
   };
 
   return (
-    <Animated.View entering={FadeInUp.duration(450).delay(delay).springify()}>
+    <Animated.View entering={enter(FadeInUp.duration(450).delay(delay).springify())}>
       <TouchableOpacity activeOpacity={0.85} onPress={handlePress} accessibilityRole="button">
         <GlassPanel
           borderRadius={radius.card}
@@ -93,7 +94,7 @@ const styles = StyleSheet.create({
     marginBottom: 3,
   },
   description: {
-    fontSize: 12.5,
+    fontSize: 13.5,
     color: colors.textSecondary,
     lineHeight: 17,
   },

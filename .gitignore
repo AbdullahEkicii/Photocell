@@ -44,3 +44,18 @@ yarn-error.*
 android/key.properties
 # Local release signing secrets (see plugins/withAndroidRelease.js)
 keystore.properties
+
+# Ruflo local secrets and runtime data
+.env
+.env.local
+.env.*.local
+.claude-flow/data/
+.claude-flow/logs/
+.claude-flow/sessions/
+
+# Built bundles
+/release
+
+# Local release outputs and store-listing assets (too large for git)
+release/
+store/

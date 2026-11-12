@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { enter } from '../theme/motion';
 import { View, Text, StyleSheet, ScrollView } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
@@ -6,7 +7,8 @@ import Animated, { FadeInDown } from 'react-native-reanimated';
 import { Images, Film, ShieldCheck, Flame, Users } from 'lucide-react-native';
 
 import { AtmosphericBackground } from '../components/glass/AtmosphericBackground';
-import { ScreenHeader } from '../components/layout/ScreenHeader';
+import { ScreenHeader, HEADER_BAR_HEIGHT, underHeader } from '../components/layout/ScreenHeader';
+import { AdBanner } from '../components/ads/AdBanner';
 import { NavCard } from '../components/layout/NavCard';
 import { SettingsModal } from '../components/settings/SettingsModal';
 import { colors, alpha } from '../theme/colors';
@@ -83,14 +85,15 @@ export const ToolsHubScreen: React.FC<Props> = ({ onSelectTool }) => {
         />
 
         <ScrollView
-          style={styles.scrollView}
+          style={[styles.scrollView, underHeader]}
           contentContainerStyle={[
             styles.scrollContent,
+            { paddingTop: HEADER_BAR_HEIGHT + 8 },
             { paddingBottom: Math.max(140, 100 + insets.bottom) },
           ]}
           showsVerticalScrollIndicator={false}
         >
-          <Animated.View entering={FadeInDown.duration(500).delay(60)} style={styles.headerSection}>
+          <Animated.View entering={enter(FadeInDown.duration(500).delay(60))} style={styles.headerSection}>
             <View style={styles.badge}>
               <Text style={styles.badgeText}>{t('tools.badge')}</Text>
             </View>
@@ -100,15 +103,19 @@ export const ToolsHubScreen: React.FC<Props> = ({ onSelectTool }) => {
 
           <View style={styles.toolsContainer}>
             {TOOLS.map((tool, index) => (
-              <NavCard
-                key={tool.id}
-                icon={tool.icon}
-                title={t(tool.titleKey)}
-                description={t(tool.descKey)}
-                accent={tool.accent}
-                delay={100 + index * 60}
-                onPress={() => onSelectTool(tool.id)}
-              />
+              <React.Fragment key={tool.id}>
+                <NavCard
+                  icon={tool.icon}
+                  title={t(tool.titleKey)}
+                  description={t(tool.descKey)}
+                  accent={tool.accent}
+                  delay={100 + index * 60}
+                  onPress={() => onSelectTool(tool.id)}
+                />
+                {index === 2 && (
+                  <AdBanner placement="tools" style={styles.toolAdBanner} />
+                )}
+              </React.Fragment>
             ))}
           </View>
         </ScrollView>
@@ -149,7 +156,7 @@ const styles = StyleSheet.create({
   },
   badgeText: {
     color: colors.primary,
-    fontSize: 10.5,
+    fontSize: 13.5,
     fontWeight: '800',
     letterSpacing: 0.9,
   },
@@ -164,6 +171,9 @@ const styles = StyleSheet.create({
     fontSize: 13,
     color: colors.textSecondary,
     lineHeight: 18,
+  },
+  toolAdBanner: {
+    marginVertical: 0,
   },
   toolsContainer: {
     gap: 12,

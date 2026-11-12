@@ -1,4 +1,6 @@
 import * as MediaLibrary from 'expo-media-library/legacy';
+
+import { getScanBudget, yieldToUi } from './scanBudget';
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as jpeg from 'jpeg-js';
@@ -30,26 +32,66 @@ export interface ScanResult {
 }
 
 const SIMILAR_TIME_WINDOW_MS = 25000; // 25s window for potential burst/similar sequences
+
+/*
+ * Heuristic thresholds. None of these has been calibrated against a labelled set of
+ * photos; they were picked by hand. Change them only with a device test in hand.
+ */
 const BLUR_SCORE_THRESHOLD = 32.0; // Contrast-normalized sharpness threshold
-const BLUR_VARIANCE_MIN_THRESHOLD = 95.0; // Absolute Laplacian variance threshold
-// Scanning the whole gallery on every run was the main reason full scans felt
-// endless — each of these assets gets at least one native size-lookup, and a
-// meaningful fraction of them (duplicate/blur candidates) get a full
-// decode+resize on top of that. Bounding to the most recent N (already sorted
-// newest-first) keeps a full scan in the tens-of-seconds range instead of
-// minutes, while "Deep AI analysis" trades speed for covering more history.
-const MAX_ASSETS_DEEP = 2500;
-const MAX_ASSETS_QUICK = 1200;
-// Blur analysis decodes every candidate, so the cap is what the "Deep AI
-// analysis" setting actually trades off: accuracy against scan time.
-const MAX_BLUR_CANDIDATES_DEEP = 240;
-const MAX_BLUR_CANDIDATES_QUICK = 80;
+
+/**
+ * Every photo in the library is scanned, newest first, in batches of
+ * SCAN_BATCH_SIZE. Only asset metadata is listed up front (no decoding), so the
+ * memory cost grows with the library size but stays small.
+ */
+const MAX_ASSETS = Number.POSITIVE_INFINITY;
+
+/**
+ * Blur checks decode each photo, so they are the expensive step. Each batch
+ * checks at most this many queued photos so the first results appear quickly;
+ * the queue is drained to the end before the scan reports itself finished, so
+ * no photo is skipped. "Deep AI analysis" gets a larger per-batch share.
+ */
+const BLUR_CHECKS_PER_BATCH_DEEP = 240;
+const BLUR_CHECKS_PER_BATCH_QUICK = 80;
+
+/** Upper bound on partners compared per photo in each duplicate pass, so bursts or
+ * blank images can't make matching quadratic. */
+const NEIGHBOUR_LIMIT = 60;
+
+/** "Exact" pass: near-identical copies. Not byte-identical: the hash allows up to 2 bits to differ. */
+const EXACT_MAX_HAMMING = 2;
+const EXACT_MAX_COLOR = 25;
+const EXACT_MAX_ASPECT = 0.05;
 
 /** Similarity tolerances. Deep mode casts a wider net for near-duplicates. */
 const SIMILARITY_TOLERANCE = {
   deep: { hamming: 12, color: 60, aspect: 0.25 },
   quick: { hamming: 8, color: 40, aspect: 0.15 },
 } as const;
+
+/** The 64-bit dHash split into four 16-bit chunks. A hash that differs in at most
+ * 2 bits matches exactly on at least 2 of the 4 chunks (pigeonhole), so indexing by
+ * chunk finds every near-identical candidate without comparing all pairs. */
+function dHashChunkKeys(dHash: string): string[] {
+  const keys: string[] = [];
+  for (let c = 0; c < 4; c++) {
+    keys.push(`${c}:${dHash.slice(c * 16, (c + 1) * 16)}`);
+  }
+  return keys;
+}
+
+/** First `limit` indices in `list` (sorted ascending) that are greater than `after`. */
+function takeIndicesAfter(list: number[], after: number, limit: number): number[] {
+  let lo = 0;
+  let hi = list.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (list[mid] <= after) lo = mid + 1;
+    else hi = mid;
+  }
+  return list.slice(lo, lo + limit);
+}
 
 export interface PermissionStatusResult {
   granted: boolean;
@@ -116,7 +158,7 @@ async function getAllAssets(
     maxItems?: number;
   } = {}
 ): Promise<MediaLibrary.Asset[]> {
-  const { album, maxItems = MAX_ASSETS_DEEP } = options;
+  const { album, maxItems = MAX_ASSETS } = options;
   let allAssets: MediaLibrary.Asset[] = [];
   let after: string | undefined = undefined;
   let hasNextPage = true;
@@ -264,7 +306,8 @@ async function detectVisualDuplicatesAndSimilar(
 
   // 2. Micro-batched Fingerprint Generation (only for candidates not already
   // in the cache — see the `fingerprintCache` param above)
-  const FINGERPRINT_BATCH = 3;
+  const budget = getScanBudget();
+  const FINGERPRINT_BATCH = budget.fingerprintConcurrency;
   for (let i = 0; i < candidatesToFingerprint.length; i += FINGERPRINT_BATCH) {
     const batch = candidatesToFingerprint.slice(i, i + FINGERPRINT_BATCH);
     await Promise.all(
@@ -288,23 +331,44 @@ async function detectVisualDuplicatesAndSimilar(
       );
     }
 
-    // Yield to JS event loop & garbage collector
-    await new Promise((resolve) => setTimeout(resolve, 15));
+    // Let touches/animations finish, then rest so the UI keeps its frames
+    await yieldToUi(budget.pauseMs);
   }
 
   // 3. Cluster by Hamming Distance & Color Similarity
   const assignedToExact = new Set<string>();
   const assignedToSimilar = new Set<string>();
 
-  // Pass A: Exact Duplicates (Hamming distance <= 2, color distance < 25, matching aspect)
+  // Index fingerprinted photos by dHash chunk. Each photo is then compared only with
+  // photos that share a chunk, instead of with every other photo.
+  const chunkIndex = new Map<string, number[]>();
+  sortedAsc.forEach((asset, idx) => {
+    const fp = fingerprints.get(asset.id);
+    if (!fp) return;
+    for (const key of dHashChunkKeys(fp.dHash)) {
+      const list = chunkIndex.get(key);
+      if (list) list.push(idx);
+      else chunkIndex.set(key, [idx]);
+    }
+  });
+
+  // Pass A: near-identical copies (criteria: EXACT_* constants above).
   for (let i = 0; i < sortedAsc.length; i++) {
     const assetA = sortedAsc[i];
     const fpA = fingerprints.get(assetA.id);
     if (!fpA || assignedToExact.has(assetA.id)) continue;
 
+    const partnerSet = new Set<number>();
+    for (const key of dHashChunkKeys(fpA.dHash)) {
+      const list = chunkIndex.get(key);
+      if (!list) continue;
+      for (const j of takeIndicesAfter(list, i, NEIGHBOUR_LIMIT)) partnerSet.add(j);
+    }
+    const partners = Array.from(partnerSet).sort((x, y) => x - y).slice(0, NEIGHBOUR_LIMIT);
+
     const group: PhotoAsset[] = [assetA as PhotoAsset];
 
-    for (let j = i + 1; j < sortedAsc.length; j++) {
+    for (const j of partners) {
       const assetB = sortedAsc[j];
       const fpB = fingerprints.get(assetB.id);
       if (!fpB || assignedToExact.has(assetB.id)) continue;
@@ -313,8 +377,11 @@ async function detectVisualDuplicatesAndSimilar(
       const colorDist = computeColorDistance(fpA.colorSignature, fpB.colorSignature);
       const aspectDiff = Math.abs(fpA.aspectRatio - fpB.aspectRatio);
 
-      // Exact Duplicate Criteria: almost 0 bit differences and identical aspect
-      if (hamming <= 2 && colorDist < 25 && aspectDiff < 0.05) {
+      if (
+        hamming <= EXACT_MAX_HAMMING &&
+        colorDist < EXACT_MAX_COLOR &&
+        aspectDiff < EXACT_MAX_ASPECT
+      ) {
         group.push(assetB as PhotoAsset);
         assignedToExact.add(assetB.id);
       }
@@ -326,28 +393,30 @@ async function detectVisualDuplicatesAndSimilar(
     }
   }
 
-  // Pass B: Similar Shots / Burst Sequences
-  // (Hamming distance <= 10 [>=84% similarity], color distance < 50, aspect tolerance < 0.2)
+  // Pass B: similar shots / bursts. Only photos within a time window are compared
+  // (photos are sorted by time), and each photo examines at most NEIGHBOUR_LIMIT partners.
+  const tolerance = deepScan ? SIMILARITY_TOLERANCE.deep : SIMILARITY_TOLERANCE.quick;
   for (let i = 0; i < sortedAsc.length; i++) {
     const assetA = sortedAsc[i];
     const fpA = fingerprints.get(assetA.id);
     if (!fpA || assignedToExact.has(assetA.id) || assignedToSimilar.has(assetA.id)) continue;
 
     const group: PhotoAsset[] = [assetA as PhotoAsset];
+    let examined = 0;
 
-    for (let j = i + 1; j < sortedAsc.length; j++) {
+    for (let j = i + 1; j < sortedAsc.length && examined < NEIGHBOUR_LIMIT; j++) {
       const assetB = sortedAsc[j];
-      const fpB = fingerprints.get(assetB.id);
-      if (!fpB || assignedToExact.has(assetB.id) || assignedToSimilar.has(assetB.id)) continue;
-
       const timeDiff = Math.abs(assetB.creationTime - assetA.creationTime);
       if (timeDiff > SIMILAR_TIME_WINDOW_MS * 2) break; // Beyond temporal locality
+
+      const fpB = fingerprints.get(assetB.id);
+      if (!fpB || assignedToExact.has(assetB.id) || assignedToSimilar.has(assetB.id)) continue;
+      examined++;
 
       const hamming = computeHammingDistance(fpA.dHash, fpB.dHash);
       const colorDist = computeColorDistance(fpA.colorSignature, fpB.colorSignature);
       const aspectDiff = Math.abs(fpA.aspectRatio - fpB.aspectRatio);
 
-      const tolerance = deepScan ? SIMILARITY_TOLERANCE.deep : SIMILARITY_TOLERANCE.quick;
       if (
         hamming <= tolerance.hamming &&
         colorDist < tolerance.color &&
@@ -385,7 +454,7 @@ async function computeSharpnessScore(asset: MediaLibrary.Asset): Promise<number 
 
     const resized = await ImageManipulator.manipulateAsync(
       uri,
-      [{ resize: { width: 120 } }],
+      [{ resize: { width: 96 } }],
       { compress: 0.6, format: ImageManipulator.SaveFormat.JPEG, base64: true }
     );
     tempUri = resized.uri;
@@ -397,6 +466,8 @@ async function computeSharpnessScore(asset: MediaLibrary.Asset): Promise<number 
     const { width, height, data } = decoded;
 
     if (!data || width <= 4 || height <= 4) return null;
+    // Release base64 string early to free RAM
+    (resized as any).base64 = null;
 
     const totalPixels = width * height;
     const gray = new Float32Array(totalPixels);
@@ -409,6 +480,7 @@ async function computeSharpnessScore(asset: MediaLibrary.Asset): Promise<number 
       totalLuminance += lum;
     }
 
+    (decoded as any).data = null;
     const avgLuminance = totalLuminance / totalPixels;
 
     // 8-neighbor discrete Laplacian convolution
@@ -467,7 +539,8 @@ async function detectBlurryPhotos(
   onBatchProgress?: (current: number, total: number) => void
 ): Promise<PhotoAsset[]> {
   const blurry: PhotoAsset[] = [];
-  const BATCH_SIZE = 4;
+  const budget = getScanBudget();
+  const BATCH_SIZE = budget.blurConcurrency;
 
   for (let i = 0; i < assets.length; i += BATCH_SIZE) {
     const batch = assets.slice(i, i + BATCH_SIZE);
@@ -487,8 +560,8 @@ async function detectBlurryPhotos(
       onBatchProgress(Math.min(i + BATCH_SIZE, assets.length), assets.length);
     }
 
-    // Hermes GC breath pause
-    await new Promise((resolve) => setTimeout(resolve, 15));
+    // Let touches/animations finish, then rest (also gives Hermes a GC breath)
+    await yieldToUi(budget.pauseMs);
   }
 
   return blurry;
@@ -565,7 +638,7 @@ async function computeRealTotalSize(assets: PhotoAsset[]): Promise<number> {
 const SCAN_BATCH_SIZE = 500;
 
 export interface ScanBatchMeta {
-  /** True once every batch up to the deep/quick-scan cap has been processed. */
+  /** True once every photo in the library has been scanned and the blur queue is drained. */
   isFinal: boolean;
   scannedAssets: number;
   totalAssets: number;
@@ -588,11 +661,18 @@ function broadcastPartialResult(result: ScanResult, meta: ScanBatchMeta): void {
   partialResultListeners.forEach((listener) => listener(result, meta));
 }
 
+export function subscribeScanBatch(callback: ScanPartialResultCallback): () => void {
+  partialResultListeners.add(callback);
+  return () => {
+    partialResultListeners.delete(callback);
+  };
+}
+
 /**
  * Scans the gallery for duplicates, similar shots, screenshots and blur.
  *
  * The returned promise resolves once the ENTIRE scan (every batch, up to the
- * deep/quick-scan cap) is done — existing callers that just `await` this
+ * whole library is done — existing callers that just `await` this
  * don't need to change. But the real work happens in bounded batches of
  * `SCAN_BATCH_SIZE`, and each batch's result is cached and broadcast via
  * `onPartialResult` as soon as it's ready. Pass that callback if you want to
@@ -678,7 +758,18 @@ export function isPhotoScanInProgress(): boolean {
  */
 export const prewarmPhotoScan = (): void => {
   if (ScanCacheService.getPhotoScan()) return;
-  scanPhotos().catch(() => {});
+  // Start when the JS thread is idle, not on top of launch animations.
+  const scheduleScan = () => {
+    setTimeout(() => {
+      if (ScanCacheService.getPhotoScan()) return;
+      scanPhotos().catch(() => {});
+    }, 2500);
+  };
+  if (typeof requestIdleCallback === 'function') {
+    requestIdleCallback(scheduleScan, { timeout: 3000 });
+  } else {
+    setTimeout(scheduleScan, 1000);
+  }
 };
 
 const emptyScanResult = (): ScanResult => ({
@@ -723,11 +814,9 @@ async function runFullScan(): Promise<ScanResult> {
     .then((s) => s.deepScanEnabled)
     .catch(() => true);
 
-  const overallCap = deepScan ? MAX_ASSETS_DEEP : MAX_ASSETS_QUICK;
-
   // 1. Fetch asset metadata up front — this is a MediaStore/Photos query, no
-  // image decoding, so it's cheap even at the full cap.
-  const allAssetsDesc = await getAllAssets({ maxItems: overallCap });
+  // image decoding, so it's cheap even for a large library.
+  const allAssetsDesc = await getAllAssets({ maxItems: MAX_ASSETS });
 
   const fingerprintCache = new Map<string, VisualFingerprint>();
   let screenshots: PhotoAsset[] = [];
@@ -735,7 +824,62 @@ async function runFullScan(): Promise<ScanResult> {
   let exactDuplicates: PhotoAsset[][] = [];
   let similarPhotos: PhotoAsset[][] = [];
   let latestResult: ScanResult = emptyScanResult();
-  let blurCheckedUpTo = 0;
+  // Blur queue: photos waiting for a sharpness check, in newest-first order.
+  const blurQueue: MediaLibrary.Asset[] = [];
+  let blurHead = 0;
+  let blurEnqueuedUpTo = 0;
+  const blurLimit = deepScan ? BLUR_CHECKS_PER_BATCH_DEEP : BLUR_CHECKS_PER_BATCH_QUICK;
+
+  const excludedFromBlur = (): Set<string> =>
+    new Set([
+      ...exactDuplicates.flat().map((s) => s.id),
+      ...similarPhotos.flat().map((s) => s.id),
+      ...screenshots.map((s) => s.id),
+    ]);
+
+  /** Checks up to `blurLimit` queued photos, skipping ones already in another category. */
+  const runBlurStep = (excludedIds: Set<string>): Promise<PhotoAsset[]> => {
+    const picked: MediaLibrary.Asset[] = [];
+    while (picked.length < blurLimit && blurHead < blurQueue.length) {
+      const candidate = blurQueue[blurHead];
+      blurHead++;
+      if (!excludedIds.has(candidate.id)) picked.push(candidate);
+    }
+    return detectBlurryPhotos(picked, (curr, tot) => {
+      broadcastScanProgress({
+        progress: Math.round(70 + (curr / Math.max(1, tot)) * 20),
+        stepKey: 'dashboard.status.scan_step_blurry',
+        stepDefault: 'Yapay Zeka ile Bulanıklık Analizi Yapılıyor...',
+        scannedCount: curr,
+        totalCount: tot,
+      });
+    });
+  };
+
+  /** Filters out photos deleted meanwhile, measures sizes, then caches and broadcasts. */
+  const publishBatch = async (scannedAssets: number, isFinal: boolean): Promise<void> => {
+    const isAlive = (a: PhotoAsset) => !deletedAssetIds.has(a.id);
+    exactDuplicates = exactDuplicates.map((g) => g.filter(isAlive)).filter((g) => g.length > 1);
+    similarPhotos = similarPhotos.map((g) => g.filter(isAlive)).filter((g) => g.length > 1);
+    screenshots = screenshots.filter(isAlive);
+    blurryPhotos = blurryPhotos.filter(isAlive);
+
+    // Total size — only over the (small) candidate set. computeRealTotalSize
+    // itself skips anything already measured in a previous batch.
+    const allCandidates = [
+      ...exactDuplicates.flat(),
+      ...similarPhotos.flat(),
+      ...screenshots,
+      ...blurryPhotos,
+    ] as PhotoAsset[];
+    const totalSize = await computeRealTotalSize(allCandidates);
+
+    latestResult = { totalSize, exactDuplicates, similarPhotos, screenshots, blurryPhotos };
+    // Cached and broadcast after every batch, so results show up while the rest of the gallery is still being scanned.
+    ScanCacheService.setPhotoScan(latestResult);
+    latestBatchMeta = { isFinal, scannedAssets, totalAssets: allAssetsDesc.length };
+    broadcastPartialResult(latestResult, latestBatchMeta);
+  };
 
   const totalBatches = Math.max(1, Math.ceil(allAssetsDesc.length / SCAN_BATCH_SIZE));
 
@@ -784,45 +928,14 @@ async function runFullScan(): Promise<ScanResult> {
     exactDuplicates = dupResult.exactDuplicates;
     similarPhotos = dupResult.similarPhotos;
 
-    const exactIds = new Set(exactDuplicates.flat().map((s) => s.id));
-    const similarIds = new Set(similarPhotos.flat().map((s) => s.id));
-    const screenshotIds = new Set(screenshots.map((s) => s.id));
+    // 4. Blur — queue the newly fetched photos and check one share of the queue.
+    // Every queued photo is checked: here, or in the drain after the loop.
+    for (let k = blurEnqueuedUpTo; k < batchEnd; k++) blurQueue.push(allAssetsDesc[k]);
+    blurEnqueuedUpTo = batchEnd;
 
-    // 4. Blur — only the newly available slice needs analysis; a photo's
-    // sharpness doesn't depend on any other photo, so earlier batches'
-    // results just carry forward (minus anything freshly reclassified as a
-    // duplicate/screenshot on this pass).
-    const newSlice = accumulated.slice(blurCheckedUpTo);
-    const newBlurCandidates = newSlice
-      .filter((a) => !exactIds.has(a.id) && !similarIds.has(a.id) && !screenshotIds.has(a.id))
-      .slice(0, deepScan ? MAX_BLUR_CANDIDATES_DEEP : MAX_BLUR_CANDIDATES_QUICK);
-
-    broadcastScanProgress({
-      progress: 70,
-      stepKey: 'dashboard.status.scan_step_blurry',
-      stepDefault: 'Yapay Zeka ile Bulanıklık Analizi Yapılıyor...',
-      scannedCount: 0,
-      totalCount: newBlurCandidates.length,
-    });
-
-    const newlyBlurry = await detectBlurryPhotos(newBlurCandidates, (curr, tot) => {
-      const subProgress = Math.round(70 + (curr / Math.max(1, tot)) * 20);
-      broadcastScanProgress({
-        progress: subProgress,
-        stepKey: 'dashboard.status.scan_step_blurry',
-        stepDefault: 'Yapay Zeka ile Bulanıklık Analizi Yapılıyor...',
-        scannedCount: curr,
-        totalCount: tot,
-      });
-    });
-
-    blurryPhotos = [
-      ...blurryPhotos.filter(
-        (a) => !exactIds.has(a.id) && !similarIds.has(a.id) && !screenshotIds.has(a.id)
-      ),
-      ...newlyBlurry,
-    ];
-    blurCheckedUpTo = batchEnd;
+    const excluded = excludedFromBlur();
+    const newlyBlurry = await runBlurStep(excluded);
+    blurryPhotos = [...blurryPhotos.filter((a) => !excluded.has(a.id)), ...newlyBlurry];
 
     broadcastScanProgress({
       progress: 92,
@@ -832,26 +945,7 @@ async function runFullScan(): Promise<ScanResult> {
       totalCount: allAssetsDesc.length,
     });
 
-    // A background batch can finish after the user already deleted some of
-    // what it found (it works from a snapshot taken when the batch started).
-    // Drop those now, or they would reappear in the results.
-    const isAlive = (a: PhotoAsset) => !deletedAssetIds.has(a.id);
-    exactDuplicates = exactDuplicates.map((g) => g.filter(isAlive)).filter((g) => g.length > 1);
-    similarPhotos = similarPhotos.map((g) => g.filter(isAlive)).filter((g) => g.length > 1);
-    screenshots = screenshots.filter(isAlive);
-    blurryPhotos = blurryPhotos.filter(isAlive);
-
-    // 5. Total size — only over the (small) candidate set. computeRealTotalSize
-    // itself skips anything already measured in a previous batch.
-    const allCandidates = [
-      ...exactDuplicates.flat(),
-      ...similarPhotos.flat(),
-      ...screenshots,
-      ...blurryPhotos,
-    ] as PhotoAsset[];
-    const totalSize = await computeRealTotalSize(allCandidates);
-
-    latestResult = { totalSize, exactDuplicates, similarPhotos, screenshots, blurryPhotos };
+    await publishBatch(batchEnd, false);
 
     broadcastScanProgress({
       progress: 100,
@@ -861,17 +955,6 @@ async function runFullScan(): Promise<ScanResult> {
       totalCount: allAssetsDesc.length,
     });
 
-    // Cache and broadcast after every batch — this is what makes the first
-    // ~500 photos' worth of results available in seconds, with the rest
-    // streaming in quietly afterward instead of blocking on all of it.
-    ScanCacheService.setPhotoScan(latestResult);
-    latestBatchMeta = {
-      isFinal: isFinalBatch,
-      scannedAssets: batchEnd,
-      totalAssets: allAssetsDesc.length,
-    };
-    broadcastPartialResult(latestResult, latestBatchMeta);
-
     if (!isFinalBatch) {
       // Let the JS thread and any pending UI update breathe before grinding
       // through the next batch — the whole point is that this keeps running
@@ -880,6 +963,16 @@ async function runFullScan(): Promise<ScanResult> {
     }
   }
 
+  // Drain the blur queue: photos left over from the per-batch limit are still checked.
+  while (blurHead < blurQueue.length) {
+    const excludedNow = excludedFromBlur();
+    const drained = await runBlurStep(excludedNow);
+    blurryPhotos = [...blurryPhotos.filter((a) => !excludedNow.has(a.id)), ...drained];
+    await publishBatch(allAssetsDesc.length, false);
+    await new Promise((resolve) => setTimeout(resolve, 150));
+  }
+
+  await publishBatch(allAssetsDesc.length, true);
   return latestResult;
 }
 
@@ -913,6 +1006,10 @@ export function deleteMediaAssets(ids: string[], freedBytes = 0): Promise<boolea
         // cannot put it back into the results, and drop it from the cached
         // scan right away - whichever screen did the deleting.
         ids.forEach((id) => deletedAssetIds.add(id));
+        // Session-only memory: keep the most recent 5000 ids, drop the oldest.
+        while (deletedAssetIds.size > 5000) {
+          deletedAssetIds.delete(deletedAssetIds.values().next().value as string);
+        }
         ScanCacheService.removeDeletedAssets(ids, freedBytes);
         ScanCacheService.invalidateTimeline();
         ScanCacheService.invalidateVideoList();

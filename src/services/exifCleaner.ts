@@ -1,11 +1,13 @@
 import * as MediaLibrary from 'expo-media-library/legacy';
+import type { PermissionKind } from './permissionAlerts';
+import { PermissionsAndroid, Platform } from 'react-native';
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as FileSystem from 'expo-file-system/legacy';
 import { formatByteSize } from './cacheCleaner';
 import { deleteMediaAssets } from './mediaScanner';
 
 /** Upper bound on photos whose EXIF is read in one scan. */
-const MAX_INSPECTED = 600;
+const MAX_INSPECTED = 2500;
 const INSPECT_CONCURRENCY = 6;
 
 export interface ExifPhotoItem {
@@ -26,10 +28,42 @@ export interface ExifPhotoItem {
  * version guessed from the filename prefix, so photos with no GPS at all were
  * still listed as "location detected".
  */
+/**
+ * On Android 10+ the photo's GPS coordinates are only returned when the app holds the
+ * runtime permission ACCESS_MEDIA_LOCATION. It is declared in the manifest but must be
+ * requested on its own; without it every photo reads as "no location".
+ */
+let deniedPermission: PermissionKind | null = null;
+
+/** The permission that the last scan was missing, or null. Read by the screen to explain it. */
+export function lastDeniedPermission(): PermissionKind | null {
+  return deniedPermission;
+}
+
+async function ensureMediaLocationAccess(): Promise<boolean> {
+  if (Platform.OS !== 'android' || Platform.Version < 29) return true;
+  try {
+    const result = await PermissionsAndroid.request(
+      PermissionsAndroid.PERMISSIONS.ACCESS_MEDIA_LOCATION
+    );
+    const granted = result === PermissionsAndroid.RESULTS.GRANTED;
+    if (!granted) deniedPermission = 'location';
+    return granted;
+  } catch {
+    deniedPermission = 'location';
+    return false;
+  }
+}
+
 export async function fetchExifCandidates(limit = 40): Promise<ExifPhotoItem[]> {
   try {
+    deniedPermission = null;
     const { status } = await MediaLibrary.requestPermissionsAsync(false, ['photo']);
-    if (status !== 'granted') return [];
+    if (status !== 'granted') {
+      deniedPermission = 'media';
+      return [];
+    }
+    await ensureMediaLocationAccess();
 
     const items: ExifPhotoItem[] = [];
     const inspect = async (asset: MediaLibrary.Asset) => {

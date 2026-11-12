@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { enter } from '../theme/motion';
 import { View, Text, StyleSheet, ScrollView, TouchableOpacity, ActivityIndicator } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
@@ -18,7 +19,8 @@ import * as Haptics from 'expo-haptics';
 
 import { AtmosphericBackground } from '../components/glass/AtmosphericBackground';
 import { GlassPanel } from '../components/glass/GlassPanel';
-import { ScreenHeader } from '../components/layout/ScreenHeader';
+import { ScreenHeader, HEADER_BAR_HEIGHT, underHeader } from '../components/layout/ScreenHeader';
+import { AdBanner } from '../components/ads/AdBanner';
 import { EmptyState } from '../components/layout/EmptyState';
 import { SettingsModal } from '../components/settings/SettingsModal';
 import { colors, alpha, radius } from '../theme/colors';
@@ -35,7 +37,7 @@ const CATEGORY_ICONS = {
   browser: Compass,
 } as const;
 
-export const ReportScreen: React.FC = () => {
+export const ReportScreen: React.FC<{ onBack?: () => void }> = ({ onBack }) => {
   const { t } = useTranslation();
   const insets = useSafeAreaInsets();
   const [scanResult, setScanResult] = useState<CacheScanResult | null>(null);
@@ -109,21 +111,22 @@ export const ReportScreen: React.FC = () => {
       <SafeAreaView style={styles.safeArea} edges={['top']}>
         <ScreenHeader
           title={t('report.title')}
-          showLanguageToggle
+          onBack={onBack}
           onRefresh={loadCacheInfo}
           onOpenSettings={() => setSettingsVisible(true)}
         />
 
         <ScrollView
-          style={styles.scrollView}
+          style={[styles.scrollView, underHeader]}
           contentContainerStyle={[
             styles.scrollContent,
+            { paddingTop: HEADER_BAR_HEIGHT + 8 },
             { paddingBottom: Math.max(180, 150 + insets.bottom) },
           ]}
           showsVerticalScrollIndicator={false}
         >
           {/* Lifetime savings */}
-          <Animated.View entering={FadeInUp.duration(500).delay(80)} style={styles.heroCard}>
+          <Animated.View entering={enter(FadeInUp.duration(500).delay(80))} style={styles.heroCard}>
             <GlassPanel
               borderRadius={radius.sheet}
               contentStyle={styles.heroContent}
@@ -157,14 +160,14 @@ export const ReportScreen: React.FC = () => {
 
           {/* Result banner — previously computed but never rendered. */}
           {cleanFeedback && (
-            <Animated.View entering={FadeIn.duration(250)} style={styles.feedbackBanner}>
+            <Animated.View entering={enter(FadeIn.duration(250))} style={styles.feedbackBanner}>
               <Sparkles color={colors.successMint} size={16} />
               <Text style={styles.feedbackText}>{cleanFeedback}</Text>
             </Animated.View>
           )}
 
           {/* Cache categories */}
-          <Animated.View entering={FadeInDown.duration(500).delay(140)} style={styles.cacheSection}>
+          <Animated.View entering={enter(FadeInDown.duration(500).delay(140))} style={styles.cacheSection}>
             <View style={styles.sectionHeader}>
               <Text style={styles.sectionTitle}>{t('report.ready_to_clean')}</Text>
               {hasAnyCache && (
@@ -257,6 +260,7 @@ export const ReportScreen: React.FC = () => {
               </View>
             )}
           </Animated.View>
+        <AdBanner placement="report" />
         </ScrollView>
 
         {/* Clean action */}
@@ -331,7 +335,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   heroLabel: {
-    fontSize: 11.5,
+    fontSize: 13.5,
     fontWeight: '800',
     color: colors.textMuted,
     textTransform: 'uppercase',
@@ -362,7 +366,7 @@ const styles = StyleSheet.create({
     gap: 4,
   },
   statLabel: {
-    fontSize: 10.5,
+    fontSize: 13.5,
     fontWeight: '800',
     color: colors.textMuted,
     textTransform: 'uppercase',
@@ -387,7 +391,7 @@ const styles = StyleSheet.create({
   },
   feedbackText: {
     flex: 1,
-    fontSize: 12.5,
+    fontSize: 13.5,
     fontWeight: '700',
     color: colors.successMint,
     lineHeight: 17,
@@ -403,7 +407,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 2,
   },
   sectionTitle: {
-    fontSize: 12.5,
+    fontSize: 13.5,
     fontWeight: '800',
     color: colors.textSecondary,
     textTransform: 'uppercase',
@@ -419,7 +423,7 @@ const styles = StyleSheet.create({
   },
   totalBadgeText: {
     color: colors.primary,
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: '800',
   },
   loadingBox: {
@@ -461,7 +465,7 @@ const styles = StyleSheet.create({
     marginBottom: 2,
   },
   categorySize: {
-    fontSize: 12.5,
+    fontSize: 13.5,
     fontWeight: '600',
     color: colors.textMuted,
   },

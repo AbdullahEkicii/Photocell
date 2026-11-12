@@ -1,3 +1,5 @@
+import { recordProgress } from './progressService';
+import { colors } from '../theme/colors';
 import * as FileSystem from 'expo-file-system/legacy';
 
 export interface RealCacheFile {
@@ -69,6 +71,7 @@ export async function getStoredStats(): Promise<SavedStats> {
  */
 export async function recordCleanedPhotos(freedBytes: number): Promise<void> {
   if (!freedBytes || freedBytes <= 0) return;
+  recordProgress(freedBytes).catch(() => {});
   try {
     const currentStats = await getStoredStats();
     const newStats: SavedStats = {
@@ -84,6 +87,7 @@ export async function recordCleanedPhotos(freedBytes: number): Promise<void> {
 
 export async function recordCleanedVideos(savedBytes: number): Promise<void> {
   if (!savedBytes || savedBytes <= 0) return;
+  recordProgress(savedBytes).catch(() => {});
   try {
     const currentStats = await getStoredStats();
     const newStats: SavedStats = {
@@ -232,7 +236,7 @@ export const scanDeviceCache = async (): Promise<CacheScanResult> => {
         sizeBytes: systemBytes,
         formattedSize: formatByteSize(systemBytes),
         iconName: 'system',
-        accentColor: '#9333EA',
+        accentColor: colors.primary,
         selected: true,
         fileCount: systemCount,
       },
@@ -243,7 +247,7 @@ export const scanDeviceCache = async (): Promise<CacheScanResult> => {
         sizeBytes: appBytes,
         formattedSize: formatByteSize(appBytes),
         iconName: 'app',
-        accentColor: '#D946EF',
+        accentColor: colors.accent,
         selected: true,
         fileCount: appCount,
       },
@@ -254,7 +258,7 @@ export const scanDeviceCache = async (): Promise<CacheScanResult> => {
         sizeBytes: browserBytes,
         formattedSize: formatByteSize(browserBytes),
         iconName: 'browser',
-        accentColor: '#10B981',
+        accentColor: colors.successMint,
         selected: true,
         fileCount: browserCount,
       },

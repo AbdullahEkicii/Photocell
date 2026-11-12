@@ -168,6 +168,9 @@ export async function deleteChosenContacts(contactIds: string[]): Promise<boolea
     try {
       await Contacts.removeContactAsync(id);
       deletedIds.add(id);
+      while (deletedIds.size > 5000) {
+        deletedIds.delete(deletedIds.values().next().value as string);
+      }
     } catch (e) {
       allDeleted = false;
       console.warn(`Failed deleting contact ${id}:`, e);

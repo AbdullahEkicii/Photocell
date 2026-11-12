@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from 'react';
+import { enter } from '../theme/motion';
 import { View, Text, StyleSheet, TouchableOpacity, ScrollView } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
@@ -19,10 +20,12 @@ import * as Haptics from 'expo-haptics';
 import { AtmosphericBackground } from '../components/glass/AtmosphericBackground';
 import { GlassPanel } from '../components/glass/GlassPanel';
 import { GlassButton } from '../components/glass/GlassButton';
-import { ScreenHeader, HeaderIconButton } from '../components/layout/ScreenHeader';
+import { ScreenHeader, HeaderIconButton, HEADER_BAR_HEIGHT, underHeader } from '../components/layout/ScreenHeader';
+import { AdBanner } from '../components/ads/AdBanner';
 import { NavCard } from '../components/layout/NavCard';
 import { SettingsModal } from '../components/settings/SettingsModal';
 import { StorageHealthWidget } from '../components/dashboard/StorageHealthWidget';
+import { ProgressCard } from '../components/progress/ProgressCard';
 import { OnboardingGuideModal } from '../components/guide/OnboardingGuideModal';
 import { PermissionGuidanceModal } from '../components/PermissionGuidanceModal';
 import { colors, alpha, radius } from '../theme/colors';
@@ -32,10 +35,12 @@ import { checkMediaPermissionsStatus } from '../services/mediaScanner';
 
 interface Props {
   onNavigate: (tab: TabType) => void;
+  /** Report is a sub-screen of Home, not a tab. */
+  onOpenReport: () => void;
   onFullscreenToggle?: (enabled: boolean) => void;
 }
 
-export const HomeScreen: React.FC<Props> = ({ onNavigate, onFullscreenToggle }) => {
+export const HomeScreen: React.FC<Props> = ({ onNavigate, onOpenReport, onFullscreenToggle }) => {
   const { t } = useTranslation();
   const insets = useSafeAreaInsets();
   const [lifetimeSavedBytes, setLifetimeSavedBytes] = useState<number>(0);
@@ -64,7 +69,7 @@ export const HomeScreen: React.FC<Props> = ({ onNavigate, onFullscreenToggle }) 
   };
 
   const cards: {
-    key: TabType;
+    key: TabType | 'report';
     icon: React.ComponentType<any>;
     titleKey: string;
     descKey: string;
@@ -124,15 +129,16 @@ export const HomeScreen: React.FC<Props> = ({ onNavigate, onFullscreenToggle }) 
         />
 
         <ScrollView
-          style={styles.scrollView}
+          style={[styles.scrollView, underHeader]}
           contentContainerStyle={[
             styles.scrollContent,
+            { paddingTop: HEADER_BAR_HEIGHT + 8 },
             { paddingBottom: Math.max(140, 110 + insets.bottom) },
           ]}
           showsVerticalScrollIndicator={false}
         >
           {/* Hero */}
-          <Animated.View entering={FadeInDown.duration(500).delay(60)} style={styles.heroSection}>
+          <Animated.View entering={enter(FadeInDown.duration(500).delay(60))} style={styles.heroSection}>
             <GlassPanel
               borderRadius={radius.sheet}
               contentStyle={styles.heroContent}
@@ -170,7 +176,7 @@ export const HomeScreen: React.FC<Props> = ({ onNavigate, onFullscreenToggle }) 
 
           {/* Limited gallery access warning (Android 14/15) */}
           {isLimitedAccess && (
-            <Animated.View entering={FadeInDown.duration(400)} style={styles.limitedBanner}>
+            <Animated.View entering={enter(FadeInDown.duration(400))} style={styles.limitedBanner}>
               <TouchableOpacity
                 activeOpacity={0.85}
                 accessibilityRole="button"
@@ -203,7 +209,13 @@ export const HomeScreen: React.FC<Props> = ({ onNavigate, onFullscreenToggle }) 
             </Animated.View>
           )}
 
+          <View style={styles.homeAdWrap}>
+            <AdBanner placement="home" style={styles.homeAdBanner} />
+          </View>
+
           <StorageHealthWidget />
+
+          <ProgressCard />
 
           <View style={styles.cardsContainer}>
             {cards.map((card, index) => (
@@ -214,10 +226,11 @@ export const HomeScreen: React.FC<Props> = ({ onNavigate, onFullscreenToggle }) 
                 description={t(card.descKey)}
                 accent={card.accent}
                 delay={120 + index * 60}
-                onPress={() => goTo(card.key)}
+                onPress={() => (card.key === 'report' ? onOpenReport() : goTo(card.key))}
               />
             ))}
           </View>
+
         </ScrollView>
       </SafeAreaView>
 
@@ -279,7 +292,7 @@ const styles = StyleSheet.create({
   },
   heroBadgeText: {
     color: colors.primary,
-    fontSize: 10,
+    fontSize: 13,
     fontWeight: '800',
     letterSpacing: 0.8,
   },
@@ -296,7 +309,7 @@ const styles = StyleSheet.create({
   },
   heroStatsBadgeText: {
     color: colors.successMint,
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: '800',
   },
   heroTitle: {
@@ -353,9 +366,20 @@ const styles = StyleSheet.create({
     marginBottom: 2,
   },
   limitedBannerDesc: {
-    fontSize: 11.5,
+    fontSize: 13.5,
     color: colors.textSecondary,
     lineHeight: 15,
+  },
+  homeAdWrap: {
+    // Same 20 px side inset as the hero card above it. Negative top margin pulls it
+    // closer to the hero card; the bottom margin sets the gap to the next card.
+    marginHorizontal: 20,
+    marginTop: -8,
+    marginBottom: 4,
+  },
+  homeAdBanner: {
+    marginVertical: 0,
+    paddingVertical: 4,
   },
   cardsContainer: {
     paddingHorizontal: 20,

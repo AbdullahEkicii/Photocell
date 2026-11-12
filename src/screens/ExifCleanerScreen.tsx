@@ -1,4 +1,10 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { withAdRows } from '../components/ads/adRows';
+import { lastDeniedPermission } from '../services/exifCleaner';
+import { notifyPermissionDenied } from '../services/permissionAlerts';
+import { AdBanner } from '../components/ads/AdBanner';
+import { enter } from '../theme/motion';
+import { AnalyticsService } from '../services/analyticsService';
 import { View, Text, StyleSheet, ActivityIndicator, Image, Alert } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
@@ -37,6 +43,8 @@ export const ExifCleanerScreen: React.FC<Props> = ({ onBack }) => {
       setLoading(true);
       const items = await fetchExifCandidates(120);
       setPhotos(items);
+      const denied = lastDeniedPermission();
+      if (denied) notifyPermissionDenied(denied);
     } catch (err) {
       console.warn('Failed loading exif candidates:', err);
     } finally {
@@ -62,8 +70,10 @@ export const ExifCleanerScreen: React.FC<Props> = ({ onBack }) => {
         // Mark inline so the user can see which photos are already handled
         // instead of losing that state behind an alert.
         setCleanedIds((prev) => new Set(prev).add(item.id));
+        AnalyticsService.trackToolUsed('exif_cleaner', { outcome: 'replaced' });
         Alert.alert(t('general.success'), t('exif_cleaner.clean_success'));
       } else if (outcome === 'copy_only') {
+        AnalyticsService.trackToolUsed('exif_cleaner', { outcome: 'copy_only' });
         // The original still has its GPS data, so it must not be shown as cleaned.
         Alert.alert(t('general.error'), t('exif_cleaner.clean_copy_only'));
       } else {
@@ -77,6 +87,11 @@ export const ExifCleanerScreen: React.FC<Props> = ({ onBack }) => {
     }
   };
 
+  const adRows = useMemo(
+    () => withAdRows(photos, (entry) => entry.id, 'exif_cleaner', 3, 3),
+    [photos]
+  );
+
   return (
     <View style={styles.container}>
       <AtmosphericBackground />
@@ -84,7 +99,7 @@ export const ExifCleanerScreen: React.FC<Props> = ({ onBack }) => {
       <SafeAreaView style={styles.safeArea} edges={['top']}>
         <ScreenHeader title={t('exif_cleaner.title')} onBack={onBack} />
 
-        <Animated.View entering={FadeInDown.duration(400).delay(60)} style={styles.infoBanner}>
+        <Animated.View entering={enter(FadeInDown.duration(400).delay(60))} style={styles.infoBanner}>
           <GlassPanel
             borderRadius={radius.card}
             borderColor={alpha(colors.successMint, 0.24)}
@@ -111,14 +126,16 @@ export const ExifCleanerScreen: React.FC<Props> = ({ onBack }) => {
           />
         ) : (
           <FlashList
-            data={photos}
-            keyExtractor={(item) => item.id}
+            data={adRows}
+            keyExtractor={(row) => row.key}
             contentContainerStyle={{
               paddingHorizontal: 20,
               paddingTop: 8,
               paddingBottom: Math.max(50, insets.bottom + 20),
             }}
-            renderItem={({ item }) => {
+            renderItem={({ item: row }) => {
+              if (row.kind === 'ad') return <AdBanner placement={row.placement} />;
+              const item = row.item;
               const isBusy = processingId === item.id;
               const isCleaned = cleanedIds.has(item.id);
 
@@ -205,13 +222,13 @@ const styles = StyleSheet.create({
     marginBottom: 6,
   },
   infoBadgeText: {
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: '800',
     color: colors.successMint,
     letterSpacing: 0.8,
   },
   infoDesc: {
-    fontSize: 12,
+    fontSize: 13,
     color: colors.textSecondary,
     lineHeight: 17,
   },
@@ -256,7 +273,7 @@ const styles = StyleSheet.create({
     backgroundColor: alpha(colors.successMint, 0.12),
   },
   pillText: {
-    fontSize: 10,
+    fontSize: 13,
     fontWeight: '700',
   },
   cleanBtn: {
@@ -264,7 +281,7 @@ const styles = StyleSheet.create({
     height: 38,
   },
   cleanBtnText: {
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: '800',
     color: colors.successMint,
     marginLeft: 5,

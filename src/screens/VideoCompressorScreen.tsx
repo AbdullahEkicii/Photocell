@@ -1,4 +1,6 @@
 import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import { AdBanner } from '../components/ads/AdBanner';
+import { enter } from '../theme/motion';
 import {
   View,
   Text,
@@ -52,9 +54,21 @@ import {
 import { ScanCacheService } from '../services/scanCacheService';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { AnalyticsService } from '../services/analyticsService';
+import { RewardGateSheet } from '../components/ads/RewardGateSheet';
+import {
+  getFreeVideoCompressionsLeft,
+  recordVideoCompression,
+  addVideoCompressions,
+  showRewardedAd,
+  onActionCompleted,
+} from '../services/ads/adsService';
 import { recordCleanedVideos } from '../services/cacheCleaner';
 
 type SizeFilterType = 'all' | '500mb' | '100mb' | '50mb';
+
+type VideoRow =
+  | { kind: 'video'; key: string; video: VideoAsset; index: number }
+  | { kind: 'ad'; key: string };
 
 // The player lives in its own component so `useVideoPlayer` is only ever
 // called when there is a uri. It used to sit behind an early `return null`
@@ -122,6 +136,27 @@ export const VideoCompressorScreen: React.FC<Props> = ({ onBack }) => {
   const [actionProcessing, setActionProcessing] = useState<boolean>(false);
   const [settingsVisible, setSettingsVisible] = useState<boolean>(false);
   const [sizeFilter, setSizeFilter] = useState<SizeFilterType>('all');
+  // Set while the "watch an ad to compress more" sheet is open for this video.
+  const [gateVideo, setGateVideo] = useState<VideoAsset | null>(null);
+  const [visibleKeys, setVisibleKeys] = useState<Set<string>>(() => new Set());
+  const onViewableItemsChanged = useRef(({ viewableItems }: { viewableItems: any[] }) => {
+    setVisibleKeys((prev) => {
+      let changed = false;
+      const next = new Set(prev);
+      for (const item of viewableItems) {
+        const key = item.item?.key;
+        if (key && !next.has(key)) {
+          next.add(key);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }).current;
+  const viewabilityConfig = useRef({
+    itemVisiblePercentThreshold: 1,
+    waitForInteraction: false,
+  }).current;
 
   // Video preview player
   const [previewUri, setPreviewUri] = useState<string | null>(null);
@@ -178,6 +213,34 @@ export const VideoCompressorScreen: React.FC<Props> = ({ onBack }) => {
   // Leaving the screen must not leave a compression (and its temp file) behind.
   useEffect(() => () => stopRunningCompression(), []);
 
+  /**
+   * The first compression each day is free; after that a rewarded ad unlocks one more.
+   * If no ad can be shown (no fill, offline) the user is let through rather than
+   * blocked by something that is not their fault.
+   */
+  const requestCompress = async (video: VideoAsset) => {
+    const freeLeft = await getFreeVideoCompressionsLeft();
+    if (freeLeft > 0) {
+      handleStartCompress(video);
+      return;
+    }
+    AnalyticsService.logEvent('video_quota_reached', {});
+    setGateVideo(video);
+  };
+
+  const handleWatchAdToCompress = async () => {
+    const video = gateVideo;
+    setGateVideo(null);
+    if (!video) return;
+    const result = await showRewardedAd('video_compress');
+    if (result === 'dismissed') return;
+    if (result === 'unavailable') {
+      Alert.alert(t('ads.unavailable_title'), t('ads.unavailable_body'));
+    }
+    await addVideoCompressions(2);
+    handleStartCompress(video);
+  };
+
   const handleStartCompress = async (video: VideoAsset) => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
     stopRunningCompression();
@@ -217,6 +280,7 @@ export const VideoCompressorScreen: React.FC<Props> = ({ onBack }) => {
       ).catch(() => {});
 
       if (result.isSmaller) {
+        recordVideoCompression().catch(() => {});
         AnalyticsService.trackVideoCompressed(
           result.originalSizeBytes,
           result.compressedSizeBytes,
@@ -237,6 +301,8 @@ export const VideoCompressorScreen: React.FC<Props> = ({ onBack }) => {
   };
 
   const finishAfterAction = () => {
+    // A finished compression is a natural pause: an interstitial may follow (rationed).
+    onActionCompleted('video_compress').catch(() => {});
     runIdRef.current += 1;
     setModalVisible(false);
     setSelectedVideo(null);
@@ -332,6 +398,17 @@ export const VideoCompressorScreen: React.FC<Props> = ({ onBack }) => {
 
   const formattedTotalSaving = formatByteSize(totalSavingBytes);
 
+  const videoRows = useMemo<VideoRow[]>(() => {
+    const rows: VideoRow[] = [];
+    filteredVideos.forEach((video, index) => {
+      if (index > 0 && index % 2 === 0) {
+        rows.push({ kind: 'ad', key: `ad-${index}` });
+      }
+      rows.push({ kind: 'video', key: video.id, video, index });
+    });
+    return rows;
+  }, [filteredVideos]);
+
   const renderVideoItem = useCallback(
     ({ item, index }: { item: VideoAsset; index: number }) => {
       const isPurpleAccent = index % 2 === 1;
@@ -408,7 +485,7 @@ export const VideoCompressorScreen: React.FC<Props> = ({ onBack }) => {
                   intensity={20}
                   style={styles.compressButton}
                   contentStyle={styles.compressButtonContent}
-                  onPress={() => handleStartCompress(item)}
+                  onPress={() => requestCompress(item)}
                 >
                   <Text style={[styles.compressButtonText, { color: accentColor }]}>
                     {t('compressor.compress')}
@@ -423,6 +500,22 @@ export const VideoCompressorScreen: React.FC<Props> = ({ onBack }) => {
     [t]
   );
 
+  const renderVideoRow = useCallback(
+    ({ item }: { item: VideoRow }) => {
+      if (item.kind === 'ad') {
+        return (
+          <AdBanner
+            placement="video_compressor"
+            active={visibleKeys.has(item.key)}
+            style={styles.listAdBanner}
+          />
+        );
+      }
+      return renderVideoItem({ item: item.video, index: item.index });
+    },
+    [renderVideoItem, visibleKeys]
+  );
+
   return (
     <View style={styles.container}>
       <AtmosphericBackground />
@@ -435,7 +528,7 @@ export const VideoCompressorScreen: React.FC<Props> = ({ onBack }) => {
           onOpenSettings={() => setSettingsVisible(true)}
         />
 
-        <Animated.View entering={FadeInDown.duration(500).delay(60)} style={styles.headerSection}>
+        <Animated.View entering={enter(FadeInDown.duration(500).delay(60))} style={styles.headerSection}>
           <View style={styles.savingsPill}>
             <PiggyBank color={colors.successMint} size={15} />
             <Text style={styles.savingsPillText}>
@@ -475,9 +568,11 @@ export const VideoCompressorScreen: React.FC<Props> = ({ onBack }) => {
         ) : (
           <View style={{ flex: 1 }}>
             <FlashList
-              data={filteredVideos}
-              renderItem={renderVideoItem}
-              keyExtractor={(item) => item.id}
+              data={videoRows}
+              renderItem={renderVideoRow}
+              keyExtractor={(item) => item.key}
+              onViewableItemsChanged={onViewableItemsChanged}
+              viewabilityConfig={viewabilityConfig}
               contentContainerStyle={[
                 styles.flashListContent,
                 { paddingBottom: Math.max(40, insets.bottom + 20) },
@@ -685,6 +780,15 @@ export const VideoCompressorScreen: React.FC<Props> = ({ onBack }) => {
 
       {/* Settings Modal */}
       <SettingsModal visible={settingsVisible} onClose={() => setSettingsVisible(false)} />
+
+      <RewardGateSheet
+        visible={gateVideo !== null}
+        title={t('ads.video_reward_title')}
+        body={t('ads.video_reward_body')}
+        watchButtonText={t('ads.video_reward_watch')}
+        onWatch={handleWatchAdToCompress}
+        onDismiss={() => setGateVideo(null)}
+      />
     </View>
   );
 };
@@ -723,13 +827,16 @@ const styles = StyleSheet.create({
   },
   savingsPillText: {
     color: colors.successMint,
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '700',
   },
   flashListContent: {
     paddingHorizontal: 20,
     paddingTop: 10,
     paddingBottom: 110,
+  },
+  listAdBanner: {
+    marginVertical: 8,
   },
   cardWrapper: {
     marginBottom: 16,
@@ -796,7 +903,7 @@ const styles = StyleSheet.create({
     borderColor: colors.whiteBorderLight,
   },
   tagText: {
-    fontSize: 11,
+    fontSize: 13,
     color: colors.textSecondary,
     fontWeight: '700',
   },
@@ -816,7 +923,7 @@ const styles = StyleSheet.create({
     flexShrink: 1,
   },
   savingLabel: {
-    fontSize: 10,
+    fontSize: 13,
     color: colors.textMuted,
     fontWeight: '700',
     textTransform: 'uppercase',
@@ -969,7 +1076,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   previewTitleText: {
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '800',
     color: '#FFFFFF',
   },
@@ -985,7 +1092,7 @@ const styles = StyleSheet.create({
     marginBottom: 20,
   },
   spaceSavedLabel: {
-    fontSize: 11,
+    fontSize: 13,
     color: colors.textMuted,
     fontWeight: '700',
     textTransform: 'uppercase',
@@ -1009,7 +1116,7 @@ const styles = StyleSheet.create({
     width: '100%',
   },
   comparisonText: {
-    fontSize: 12,
+    fontSize: 13,
     color: colors.textSecondary,
     fontWeight: '600',
   },
@@ -1062,7 +1169,7 @@ const styles = StyleSheet.create({
   },
   dismissText: {
     color: colors.textMuted,
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '600',
   },
   /* Video Player Modal Styles */

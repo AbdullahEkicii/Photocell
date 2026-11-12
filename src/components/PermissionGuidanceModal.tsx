@@ -132,7 +132,7 @@ const styles = StyleSheet.create({
   },
   badgeText: {
     color: colors.primary,
-    fontSize: 10,
+    fontSize: 13,
     fontWeight: '900',
     letterSpacing: 1,
   },
@@ -167,12 +167,12 @@ const styles = StyleSheet.create({
   },
   privacyTitle: {
     color: colors.successMint,
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '800',
   },
   privacyDesc: {
     color: colors.textSecondary,
-    fontSize: 11,
+    fontSize: 13,
     lineHeight: 16,
     fontWeight: '500',
   },
@@ -200,7 +200,7 @@ const styles = StyleSheet.create({
   },
   dismissButtonText: {
     color: colors.textMuted,
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '600',
   },
 });

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { enter } from '../../theme/motion';
 import {
   View,
   Text,
@@ -28,8 +29,13 @@ import {
 import * as Haptics from 'expo-haptics';
 import Constants from 'expo-constants';
 
+import { getLanguageName } from '../../i18n/languages';
+import { LanguagePickerModal } from './LanguagePickerModal';
 import { GlassPanel } from '../glass/GlassPanel';
 import { GlassButton } from '../glass/GlassButton';
+import { LiquidGlass } from '../glass/LiquidGlass';
+import { setGlassEnabled, useGlassUserSetting } from '../glass/glassSettings';
+import { needsPrivacyOptions, openPrivacyOptions } from '../../services/ads/adsService';
 import { colors, alpha, radius } from '../../theme/colors';
 import {
   getNotificationSettings,
@@ -126,9 +132,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     Alert.alert(t('general.error'), t('settings.test_notification_failed'));
   };
 
-  const changeLang = (lang: string) => {
+  const [languagePickerVisible, setLanguagePickerVisible] = useState(false);
+  const openLanguagePicker = () => {
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium).catch(() => {});
-    i18n.changeLanguage(lang);
+    setLanguagePickerVisible(true);
   };
 
   const handleResetStats = () => {
@@ -155,7 +162,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     );
   };
 
-  const currentLang = (i18n.language || 'tr').startsWith('tr') ? 'tr' : 'en';
+  const glassOn = useGlassUserSetting();
 
   return (
     <Modal
@@ -164,19 +171,16 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       animationType="fade"
       onRequestClose={onClose}
     >
-      <Animated.View entering={FadeIn.duration(200)} style={styles.modalOverlay}>
+      <Animated.View entering={enter(FadeIn.duration(200))} style={styles.modalOverlay}>
         <Animated.View
-          entering={FadeInDown.duration(340).springify().damping(19).stiffness(190)}
+          entering={enter(FadeInDown.duration(340).springify().damping(19).stiffness(190))}
           style={styles.modalContainer}
         >
-          <GlassPanel
+          <LiquidGlass
+            blur="frosted"
             borderRadius={32}
-            borderColor="rgba(226, 232, 240, 0.95)"
-            fillColor="#FFFFFF"
-            intensity={40}
             style={styles.panel}
             contentStyle={styles.panelContent}
-            glowAccent={colors.primary}
           >
             {/* Header */}
             <View style={styles.header}>
@@ -189,6 +193,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
                   onClose();
                 }}
+                accessibilityRole="button"
+                accessibilityLabel={t('settings.close')}
                 style={styles.closeButton}
                 activeOpacity={0.7}
               >
@@ -222,7 +228,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <Switch
                     value={settings.enabled}
                     onValueChange={(val) => updateSetting('enabled', val)}
-                    trackColor={{ false: '#E2E8F0', true: colors.primary }}
+                    trackColor={{ false: colors.border, true: colors.primary }}
                     thumbColor="#FFFFFF"
                   />
                 </View>
@@ -326,44 +332,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <View style={styles.langButtonsRow}>
                     <TouchableOpacity
                       activeOpacity={0.8}
-                      onPress={() => changeLang('tr')}
-                      style={[
-                        styles.langPill,
-                        currentLang === 'tr' && styles.langPillActive,
-                      ]}
+                      onPress={openLanguagePicker}
+                      style={[styles.langPill, styles.langPillActive]}
+                      accessibilityRole="button"
                     >
-                      <Text
-                        style={[
-                          styles.langPillText,
-                          currentLang === 'tr' && styles.langPillTextActive,
-                        ]}
-                      >
-                        🇹🇷 TR
-                      </Text>
-                    </TouchableOpacity>
-
-                    <TouchableOpacity
-                      activeOpacity={0.8}
-                      onPress={() => changeLang('en')}
-                      style={[
-                        styles.langPill,
-                        currentLang === 'en' && styles.langPillActive,
-                      ]}
-                    >
-                      <Text
-                        style={[
-                          styles.langPillText,
-                          currentLang === 'en' && styles.langPillTextActive,
-                        ]}
-                      >
-                        🇬🇧 EN
+                      <Text style={[styles.langPillText, styles.langPillTextActive]}>
+                        {getLanguageName(i18n.language)}
                       </Text>
                     </TouchableOpacity>
                   </View>
                 </View>
 
                 {/* Deep AI Scan Toggle */}
-                <View style={[styles.rowItem, { marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: '#E2E8F0' }]}>
+                <View style={[styles.rowItem, { marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: colors.border }]}>
                   <View style={styles.rowTextGroup}>
                     <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                       <Sparkles color={colors.accent} size={15} style={{ marginRight: 6 }} />
@@ -374,13 +355,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <Switch
                     value={settings.deepScanEnabled}
                     onValueChange={(val) => updateSetting('deepScanEnabled', val)}
-                    trackColor={{ false: '#E2E8F0', true: colors.accent }}
+                    trackColor={{ false: colors.border, true: colors.accent }}
                     thumbColor="#FFFFFF"
                   />
                 </View>
 
                 {/* Fullscreen Mode Toggle */}
-                <View style={[styles.rowItem, { marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: '#E2E8F0' }]}>
+                <View style={[styles.rowItem, { marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: colors.border }]}>
                   <View style={styles.rowTextGroup}>
                     <View style={{ flexDirection: 'row', alignItems: 'center' }}>
                       <Maximize color={colors.primary} size={15} style={{ marginRight: 6 }} />
@@ -391,10 +372,37 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <Switch
                     value={settings.fullscreenEnabled}
                     onValueChange={(val) => updateSetting('fullscreenEnabled', val)}
-                    trackColor={{ false: '#E2E8F0', true: colors.primary }}
+                    trackColor={{ false: colors.border, true: colors.primary }}
                     thumbColor="#FFFFFF"
                   />
                 </View>
+                {/* Glass effects toggle */}
+                <View style={[styles.rowItem, { marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: colors.border }]}>
+                  <View style={styles.rowTextGroup}>
+                    <Text style={styles.itemTitle}>{t('settings.glass_effects')}</Text>
+                    <Text style={styles.itemDesc}>{t('settings.glass_effects_desc')}</Text>
+                  </View>
+                  <Switch
+                    value={glassOn}
+                    onValueChange={(val) => {
+                      setGlassEnabled(val);
+                      AnalyticsService.logEvent('glass_toggled', { enabled: val });
+                    }}
+                    trackColor={{ false: colors.border, true: colors.primary }}
+                    thumbColor="#FFFFFF"
+                  />
+                </View>
+
+                {needsPrivacyOptions() && (
+                  <TouchableOpacity
+                    activeOpacity={0.85}
+                    onPress={() => openPrivacyOptions()}
+                    style={[styles.rowItem, { marginTop: 12, paddingTop: 12, borderTopWidth: 1, borderTopColor: colors.border, minHeight: 44 }]}
+                    accessibilityRole="button"
+                  >
+                    <Text style={styles.itemTitle}>{t('settings.ad_privacy')}</Text>
+                  </TouchableOpacity>
+                )}
               </View>
 
               {/* SECTION 3: User Guide */}
@@ -466,9 +474,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             >
               <Text style={styles.bottomDoneText}>{t('settings.close')}</Text>
             </GlassButton>
-          </GlassPanel>
+          </LiquidGlass>
         </Animated.View>
       </Animated.View>
+      <LanguagePickerModal
+        visible={languagePickerVisible}
+        onClose={() => setLanguagePickerVisible(false)}
+      />
     </Modal>
   );
 };
@@ -488,12 +500,7 @@ const styles = StyleSheet.create({
     maxHeight: '92%',
   },
   panel: {
-    borderRadius: 32,
-    shadowColor: '#0F172A',
-    shadowOffset: { width: 0, height: 12 },
-    shadowOpacity: 0.15,
-    shadowRadius: 24,
-    elevation: 12,
+    maxHeight: '100%',
   },
   panelContent: {
     padding: 20,
@@ -505,7 +512,7 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingBottom: 14,
     borderBottomWidth: 1,
-    borderBottomColor: '#E2E8F0',
+    borderBottomColor: colors.border,
   },
   headerTextGroup: {
     flex: 1,
@@ -514,21 +521,21 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 22,
     fontWeight: '900',
-    color: '#0F172A',
+    color: colors.textPrimary,
     letterSpacing: -0.5,
   },
   subtitle: {
     fontSize: 13,
-    color: '#64748B',
+    color: colors.textMuted,
     marginTop: 2,
   },
   closeButton: {
     width: 38,
     height: 38,
     borderRadius: 19,
-    backgroundColor: '#F1F5F9',
+    backgroundColor: colors.surfaceSunken,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
+    borderColor: colors.border,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -537,10 +544,10 @@ const styles = StyleSheet.create({
     gap: 14,
   },
   section: {
-    backgroundColor: '#F8FAFC',
+    backgroundColor: colors.canvas,
     borderRadius: 20,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
+    borderColor: colors.border,
     padding: 14,
   },
   sectionHeader: {
@@ -569,11 +576,11 @@ const styles = StyleSheet.create({
   itemTitle: {
     fontSize: 15,
     fontWeight: '800',
-    color: '#0F172A',
+    color: colors.textPrimary,
   },
   itemDesc: {
-    fontSize: 12,
-    color: '#64748B',
+    fontSize: 13,
+    color: colors.textMuted,
     marginTop: 2,
     lineHeight: 16,
   },
@@ -581,7 +588,7 @@ const styles = StyleSheet.create({
     marginTop: 12,
     paddingTop: 12,
     borderTopWidth: 1,
-    borderTopColor: '#E2E8F0',
+    borderTopColor: colors.border,
   },
   frequencyLabel: {
     fontSize: 13,
@@ -600,7 +607,7 @@ const styles = StyleSheet.create({
     borderRadius: 14,
     backgroundColor: '#FFFFFF',
     borderWidth: 1,
-    borderColor: '#CBD5E1',
+    borderColor: colors.borderStrong,
     alignItems: 'center',
     justifyContent: 'center',
     minHeight: 40,
@@ -611,9 +618,9 @@ const styles = StyleSheet.create({
     borderWidth: 1.5,
   },
   freqPillText: {
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: '700',
-    color: '#475569',
+    color: colors.textSecondary,
     textAlign: 'center',
   },
   freqPillTextActive: {
@@ -624,7 +631,7 @@ const styles = StyleSheet.create({
     marginTop: 12,
     paddingTop: 12,
     borderTopWidth: 1,
-    borderTopColor: '#E2E8F0',
+    borderTopColor: colors.border,
   },
   testNotificationButton: {
     flexDirection: 'row',
@@ -650,8 +657,8 @@ const styles = StyleSheet.create({
     color: colors.primary,
   },
   testNotificationHint: {
-    fontSize: 11,
-    color: '#64748B',
+    fontSize: 13,
+    color: colors.textMuted,
     textAlign: 'center',
     marginTop: 8,
     lineHeight: 15,
@@ -666,7 +673,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
     backgroundColor: '#FFFFFF',
     borderWidth: 1,
-    borderColor: '#CBD5E1',
+    borderColor: colors.borderStrong,
   },
   langPillActive: {
     backgroundColor: 'rgba(217, 70, 239, 0.15)',
@@ -676,7 +683,7 @@ const styles = StyleSheet.create({
   langPillText: {
     fontSize: 13,
     fontWeight: '700',
-    color: '#475569',
+    color: colors.textSecondary,
   },
   langPillTextActive: {
     color: colors.accent,
@@ -723,18 +730,18 @@ const styles = StyleSheet.create({
   aboutVersion: {
     fontSize: 13,
     fontWeight: '800',
-    color: '#0F172A',
+    color: colors.textPrimary,
   },
   aboutTech: {
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: '700',
     color: colors.successMint,
     marginTop: 2,
     letterSpacing: 0.5,
   },
   privacyNote: {
-    fontSize: 11,
-    color: '#64748B',
+    fontSize: 13,
+    color: colors.textMuted,
     textAlign: 'center',
     marginTop: 6,
     lineHeight: 16,

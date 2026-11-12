@@ -1,4 +1,6 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { AdBanner } from '../components/ads/AdBanner';
+import { enter } from '../theme/motion';
 import { View, Text, StyleSheet, TouchableOpacity, Image } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
@@ -21,12 +23,35 @@ interface Props {
   onStartMonthDetox: (assets: PhotoAsset[], monthTitle: string, monthId: string) => void;
 }
 
+type TimelineRow =
+  | { kind: 'month'; key: string; group: MonthGroup; index: number }
+  | { kind: 'ad'; key: string };
+
 export const TimelineScreen: React.FC<Props> = ({ onStartMonthDetox }) => {
   const { t, i18n } = useTranslation();
   const insets = useSafeAreaInsets();
   const [months, setMonths] = useState<MonthGroup[]>(() => ScanCacheService.getTimeline() || []);
   const [loading, setLoading] = useState<boolean>(() => !ScanCacheService.getTimeline());
   const [refreshing, setRefreshing] = useState<boolean>(false);
+  const [visibleKeys, setVisibleKeys] = useState<Set<string>>(() => new Set());
+  const onViewableItemsChanged = useRef(({ viewableItems }: { viewableItems: any[] }) => {
+    setVisibleKeys((prev) => {
+      let changed = false;
+      const next = new Set(prev);
+      for (const item of viewableItems) {
+        const key = item.item?.key;
+        if (key && !next.has(key)) {
+          next.add(key);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }).current;
+  const viewabilityConfig = useRef({
+    itemVisiblePercentThreshold: 1,
+    waitForInteraction: false,
+  }).current;
   const [settingsVisible, setSettingsVisible] = useState<boolean>(false);
 
   const loadTimeline = useCallback(
@@ -71,6 +96,18 @@ export const TimelineScreen: React.FC<Props> = ({ onStartMonthDetox }) => {
     },
     [onStartMonthDetox]
   );
+
+  // Rows for the list: month cards, with a quiet banner after every six months.
+  const timelineRows = useMemo<TimelineRow[]>(() => {
+    const rows: TimelineRow[] = [];
+    months.forEach((group, index) => {
+      if (index === 3 || (index > 3 && (index - 3) % 4 === 0)) {
+        rows.push({ kind: 'ad', key: `ad-${index}` });
+      }
+      rows.push({ kind: 'month', key: group.id, group, index });
+    });
+    return rows;
+  }, [months]);
 
   const renderMonthCard = useCallback(
     ({ item, index }: { item: MonthGroup; index: number }) => {
@@ -168,6 +205,16 @@ export const TimelineScreen: React.FC<Props> = ({ onStartMonthDetox }) => {
     [t, handleMonthPress]
   );
 
+  const renderTimelineRow = useCallback(
+    ({ item }: { item: TimelineRow }) => {
+      if (item.kind === 'ad') {
+        return <AdBanner placement="timeline" active={visibleKeys.has(item.key)} />;
+      }
+      return renderMonthCard({ item: item.group, index: item.index });
+    },
+    [renderMonthCard, visibleKeys]
+  );
+
   return (
     <View style={styles.container}>
       <AtmosphericBackground />
@@ -180,7 +227,7 @@ export const TimelineScreen: React.FC<Props> = ({ onStartMonthDetox }) => {
           onOpenSettings={() => setSettingsVisible(true)}
         />
 
-        <Animated.View entering={FadeInDown.duration(500).delay(60)} style={styles.headerSection}>
+        <Animated.View entering={enter(FadeInDown.duration(500).delay(60))} style={styles.headerSection}>
           <View style={styles.badgeRow}>
             <View style={styles.heroBadge}>
               <Calendar color={colors.accent} size={12} />
@@ -214,9 +261,11 @@ export const TimelineScreen: React.FC<Props> = ({ onStartMonthDetox }) => {
           />
         ) : (
           <FlashList
-            data={months}
-            renderItem={renderMonthCard}
-            keyExtractor={(item) => item.id}
+            data={timelineRows}
+            renderItem={renderTimelineRow}
+            keyExtractor={(row) => row.key}
+            onViewableItemsChanged={onViewableItemsChanged}
+            viewabilityConfig={viewabilityConfig}
             refreshing={refreshing}
             onRefresh={() => loadTimeline(true)}
             contentContainerStyle={{
@@ -270,7 +319,7 @@ const styles = StyleSheet.create({
   },
   heroBadgeText: {
     color: colors.accent,
-    fontSize: 10.5,
+    fontSize: 13.5,
     fontWeight: '800',
     letterSpacing: 0.8,
   },
@@ -287,7 +336,7 @@ const styles = StyleSheet.create({
   },
   countBadgeText: {
     color: colors.primary,
-    fontSize: 10.5,
+    fontSize: 13.5,
     fontWeight: '800',
   },
   pageTitle: {
@@ -360,12 +409,12 @@ const styles = StyleSheet.create({
     borderRadius: 6,
   },
   reviewedPillText: {
-    fontSize: 9.5,
+    fontSize: 13.5,
     fontWeight: '800',
     color: colors.successMint,
   },
   monthSummary: {
-    fontSize: 12,
+    fontSize: 13,
     color: colors.textSecondary,
     marginBottom: 8,
   },
@@ -386,7 +435,7 @@ const styles = StyleSheet.create({
     borderRadius: 3,
   },
   progressText: {
-    fontSize: 11,
+    fontSize: 13,
     fontWeight: '700',
     color: colors.textMuted,
   },

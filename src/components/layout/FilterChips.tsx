@@ -100,7 +100,7 @@ const styles = StyleSheet.create({
     flexGrow: 0,
   },
   label: {
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '700',
     color: colors.textSecondary,
     textAlign: 'center',

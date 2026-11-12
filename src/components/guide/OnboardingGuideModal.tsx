@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { enter } from '../../theme/motion';
 import {
   View,
   Text,
@@ -102,12 +103,12 @@ export const OnboardingGuideModal: React.FC<Props> = ({ visible, onClose }) => {
           </TouchableOpacity>
 
           {/* Icon Badge */}
-          <Animated.View key={`icon-${currentStep}`} entering={ZoomIn.duration(300)} style={[styles.iconBadge, { backgroundColor: `${currentStepData.accentColor}18`, borderColor: `${currentStepData.accentColor}50` }]}>
+          <Animated.View key={`icon-${currentStep}`} entering={enter(ZoomIn.duration(300))} style={[styles.iconBadge, { backgroundColor: `${currentStepData.accentColor}18`, borderColor: `${currentStepData.accentColor}50` }]}>
             <IconComponent color={currentStepData.accentColor} size={36} strokeWidth={2.4} />
           </Animated.View>
 
           {/* Title and Description */}
-          <Animated.View key={`text-${currentStep}`} entering={FadeInDown.duration(300)} style={styles.textGroup}>
+          <Animated.View key={`text-${currentStep}`} entering={enter(FadeInDown.duration(300))} style={styles.textGroup}>
             <Text style={styles.stepTitle}>{t(currentStepData.titleKey)}</Text>
             <Text style={styles.stepDesc}>{t(currentStepData.descKey)}</Text>
           </Animated.View>

@@ -1,4 +1,5 @@
 import React from 'react';
+import { enter } from '../../theme/motion';
 import { View, Text, StyleSheet, ActivityIndicator } from 'react-native';
 import Animated, { FadeIn } from 'react-native-reanimated';
 
@@ -22,7 +23,7 @@ export const EmptyState: React.FC<EmptyStateProps> = ({
   accent = colors.textMuted,
   action,
 }) => (
-  <Animated.View entering={FadeIn.duration(300)} style={styles.wrapper}>
+  <Animated.View entering={enter(FadeIn.duration(300))} style={styles.wrapper}>
     <GlassPanel borderRadius={radius.panel} contentStyle={styles.content}>
       <View style={[styles.iconRing, { backgroundColor: alpha(accent, 0.1) }]}>
         <Icon color={accent} size={30} />
@@ -44,7 +45,7 @@ export const LoadingState: React.FC<LoadingStateProps> = ({
   label,
   accent = colors.primary,
 }) => (
-  <Animated.View entering={FadeIn.duration(200)} style={styles.loading}>
+  <Animated.View entering={enter(FadeIn.duration(200))} style={styles.loading}>
     <ActivityIndicator size="large" color={accent} />
     <Text style={styles.loadingLabel}>{label}</Text>
   </Animated.View>

@@ -1,4 +1,13 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { AdBanner } from '../components/ads/AdBanner';
+import { RewardGateSheet } from '../components/ads/RewardGateSheet';
+import {
+  getFreePhotoCompressionsLeft,
+  recordPhotoCompression,
+  addPhotoCompressions,
+  showRewardedAd,
+} from '../services/ads/adsService';
+import { enter } from '../theme/motion';
 import { View, Text, StyleSheet, TouchableOpacity, ActivityIndicator, Image, Modal, Alert } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useTranslation } from 'react-i18next';
@@ -8,6 +17,7 @@ import * as Haptics from 'expo-haptics';
 import { FlashList } from '@shopify/flash-list';
 
 import { AtmosphericBackground } from '../components/glass/AtmosphericBackground';
+import { onActionCompleted } from '../services/ads/adsService';
 import { GlassPanel } from '../components/glass/GlassPanel';
 import { GlassButton } from '../components/glass/GlassButton';
 import { ScreenHeader } from '../components/layout/ScreenHeader';
@@ -31,6 +41,10 @@ interface Props {
   onBack: () => void;
 }
 
+type PhotoRow =
+  | { kind: 'photo'; key: string; photo: CompressiblePhoto }
+  | { kind: 'ad'; key: string };
+
 const QUALITY_PRESETS: PhotoQualityPreset[] = [0.5, 0.75, 0.9];
 
 export const PhotoCompressorScreen: React.FC<Props> = ({ onBack }) => {
@@ -44,6 +58,27 @@ export const PhotoCompressorScreen: React.FC<Props> = ({ onBack }) => {
   const [compressionResult, setCompressionResult] = useState<PhotoCompressionResult | null>(null);
   const [compressing, setCompressing] = useState<boolean>(false);
   const [actionProcessing, setActionProcessing] = useState<boolean>(false);
+  const [gateVisible, setGateVisible] = useState<boolean>(false);
+  const [pendingPhoto, setPendingPhoto] = useState<CompressiblePhoto | null>(null);
+  const [visibleKeys, setVisibleKeys] = useState<Set<string>>(() => new Set());
+  const onViewableItemsChanged = useRef(({ viewableItems }: { viewableItems: any[] }) => {
+    setVisibleKeys((prev) => {
+      let changed = false;
+      const next = new Set(prev);
+      for (const item of viewableItems) {
+        const key = item.item?.key;
+        if (key && !next.has(key)) {
+          next.add(key);
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }).current;
+  const viewabilityConfig = useRef({
+    itemVisiblePercentThreshold: 1,
+    waitForInteraction: false,
+  }).current;
 
   const loadPhotos = useCallback(async () => {
     try {
@@ -61,6 +96,17 @@ export const PhotoCompressorScreen: React.FC<Props> = ({ onBack }) => {
     loadPhotos();
   }, [loadPhotos]);
 
+  const photoRows = useMemo<PhotoRow[]>(() => {
+    const rows: PhotoRow[] = [];
+    photos.forEach((photo, index) => {
+      if (index > 0 && index % 4 === 0) {
+        rows.push({ kind: 'ad', key: `ad-${index}` });
+      }
+      rows.push({ kind: 'photo', key: photo.id, photo });
+    });
+    return rows;
+  }, [photos]);
+
   // Identifies the compression currently allowed to update the screen. Closing
   // the dialog while one is still running used to leave it running; when it
   // finished it overwrote the result of whatever photo was open by then, so
@@ -75,6 +121,29 @@ export const PhotoCompressorScreen: React.FC<Props> = ({ onBack }) => {
     setCompressionResult(null);
     setCompressing(false);
     setActionProcessing(false);
+  };
+
+  const requestCompress = async (photo: CompressiblePhoto) => {
+    const freeLeft = await getFreePhotoCompressionsLeft();
+    if (freeLeft > 0) {
+      handleStartCompress(photo);
+      return;
+    }
+    setPendingPhoto(photo);
+    setGateVisible(true);
+  };
+
+  const handleWatchAdToCompress = async () => {
+    const photo = pendingPhoto;
+    setGateVisible(false);
+    if (!photo) return;
+    const result = await showRewardedAd('photo_compress');
+    if (result === 'dismissed') return;
+    if (result === 'unavailable') {
+      Alert.alert(t('ads.unavailable_title'), t('ads.unavailable_body'));
+    }
+    await addPhotoCompressions(3);
+    handleStartCompress(photo);
   };
 
   const handleStartCompress = async (photo: CompressiblePhoto) => {
@@ -102,6 +171,7 @@ export const PhotoCompressorScreen: React.FC<Props> = ({ onBack }) => {
           : Haptics.NotificationFeedbackType.Warning
       ).catch(() => {});
       if (result.isSmaller) {
+        recordPhotoCompression().catch(() => {});
         AnalyticsService.trackPhotoCompressed(
           result.originalSizeBytes,
           result.compressedSizeBytes,
@@ -148,6 +218,7 @@ export const PhotoCompressorScreen: React.FC<Props> = ({ onBack }) => {
     setSelectedPhoto(null);
     setCompressionResult(null);
     await loadPhotos();
+    onActionCompleted('photo_compress').catch(() => {});
   };
 
   const handleSaveCopy = async () => {
@@ -166,11 +237,55 @@ export const PhotoCompressorScreen: React.FC<Props> = ({ onBack }) => {
       setModalVisible(false);
       setSelectedPhoto(null);
       setCompressionResult(null);
+      onActionCompleted('photo_compress').catch(() => {});
     } else {
       Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error).catch(() => {});
       Alert.alert(t('general.error'), t('compressor.action_failed'));
     }
   };
+
+  const renderPhotoRow = useCallback(
+    ({ item }: { item: PhotoRow }) => {
+      if (item.kind === 'ad') {
+        return (
+          <AdBanner
+            placement="photo_compressor"
+            active={visibleKeys.has(item.key)}
+            style={styles.listAdBanner}
+          />
+        );
+      }
+      const photo = item.photo;
+      return (
+        <View style={styles.cardWrapper}>
+          <GlassPanel
+            borderRadius={radius.card}
+            contentStyle={styles.cardContent}
+            intensity={26}
+          >
+            <Image source={{ uri: photo.uri }} style={styles.thumbnail} resizeMethod="resize" resizeMode="cover" />
+            <View style={styles.cardDetails}>
+              <Text style={styles.photoName} numberOfLines={1}>
+                {photo.filename}
+              </Text>
+              <Text style={styles.photoSize}>{photo.formattedSize}</Text>
+            </View>
+            <GlassButton
+              compact
+              borderRadius={radius.chip}
+              borderColor={alpha(colors.primary, 0.45)}
+              style={styles.compressBtn}
+              onPress={() => requestCompress(photo)}
+            >
+              <Zap color={colors.primary} size={13} />
+              <Text style={styles.compressBtnText}>{t('compressor.compress')}</Text>
+            </GlassButton>
+          </GlassPanel>
+        </View>
+      );
+    },
+    [visibleKeys, t]
+  );
 
   const qualityLabel = (preset: PhotoQualityPreset) =>
     preset === 0.5
@@ -186,7 +301,7 @@ export const PhotoCompressorScreen: React.FC<Props> = ({ onBack }) => {
       <SafeAreaView style={styles.safeArea} edges={['top']}>
         <ScreenHeader title={t('photo_compressor.title')} onBack={onBack} onRefresh={loadPhotos} />
 
-        <Animated.View entering={FadeInDown.duration(400).delay(60)} style={styles.qualitySection}>
+        <Animated.View entering={enter(FadeInDown.duration(400).delay(60))} style={styles.qualitySection}>
           <Text style={styles.qualityLabel}>{t('photo_compressor.subtitle')}</Text>
           <FilterChips
             options={QUALITY_PRESETS.map((preset) => ({
@@ -209,42 +324,27 @@ export const PhotoCompressorScreen: React.FC<Props> = ({ onBack }) => {
           />
         ) : (
           <FlashList
-            data={photos}
-            keyExtractor={(item) => item.id}
+            data={photoRows}
+            renderItem={renderPhotoRow}
+            keyExtractor={(item) => item.key}
+            onViewableItemsChanged={onViewableItemsChanged}
+            viewabilityConfig={viewabilityConfig}
             contentContainerStyle={{
               paddingHorizontal: 20,
               paddingTop: 8,
               paddingBottom: Math.max(60, insets.bottom + 20),
             }}
-            renderItem={({ item }) => (
-              <View style={styles.cardWrapper}>
-                <GlassPanel
-                  borderRadius={radius.card}
-                  contentStyle={styles.cardContent}
-                  intensity={26}
-                >
-                  <Image source={{ uri: item.uri }} style={styles.thumbnail} resizeMethod="resize" resizeMode="cover" />
-                  <View style={styles.cardDetails}>
-                    <Text style={styles.photoName} numberOfLines={1}>
-                      {item.filename}
-                    </Text>
-                    <Text style={styles.photoSize}>{item.formattedSize}</Text>
-                  </View>
-                  <GlassButton
-                    compact
-                    borderRadius={radius.chip}
-                    borderColor={alpha(colors.primary, 0.45)}
-                    style={styles.compressBtn}
-                    onPress={() => handleStartCompress(item)}
-                  >
-                    <Zap color={colors.primary} size={13} />
-                    <Text style={styles.compressBtnText}>{t('compressor.compress')}</Text>
-                  </GlassButton>
-                </GlassPanel>
-              </View>
-            )}
           />
         )}
+
+        <RewardGateSheet
+          visible={gateVisible}
+          title={t('ads.photo_reward_title')}
+          body={t('ads.photo_reward_body')}
+          watchButtonText={t('ads.photo_reward_watch')}
+          onWatch={handleWatchAdToCompress}
+          onDismiss={() => setGateVisible(false)}
+        />
 
         <Modal visible={modalVisible} transparent animationType="fade" onRequestClose={closeModal}>
           <View style={styles.modalOverlay}>
@@ -364,10 +464,13 @@ const styles = StyleSheet.create({
     paddingBottom: 12,
   },
   qualityLabel: {
-    fontSize: 12.5,
+    fontSize: 13.5,
     color: colors.textSecondary,
     lineHeight: 17,
     marginBottom: 10,
+  },
+  listAdBanner: {
+    marginVertical: 6,
   },
   cardWrapper: {
     marginBottom: 10,
@@ -395,7 +498,7 @@ const styles = StyleSheet.create({
     marginBottom: 3,
   },
   photoSize: {
-    fontSize: 12,
+    fontSize: 13,
     fontWeight: '600',
     color: colors.textSecondary,
   },
@@ -404,7 +507,7 @@ const styles = StyleSheet.create({
     height: 38,
   },
   compressBtnText: {
-    fontSize: 11.5,
+    fontSize: 13.5,
     fontWeight: '800',
     color: colors.primary,
     marginLeft: 5,
@@ -435,7 +538,7 @@ const styles = StyleSheet.create({
     color: colors.textPrimary,
   },
   compressingSub: {
-    fontSize: 12.5,
+    fontSize: 13.5,
     color: colors.textMuted,
     maxWidth: 240,
   },
@@ -472,7 +575,7 @@ const styles = StyleSheet.create({
     marginBottom: 18,
   },
   savedLabel: {
-    fontSize: 10.5,
+    fontSize: 13.5,
     fontWeight: '800',
     color: colors.textMuted,
     textTransform: 'uppercase',
@@ -486,7 +589,7 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   sizeComparison: {
-    fontSize: 12,
+    fontSize: 13,
     color: colors.textSecondary,
     fontWeight: '700',
   },
