@@ -59,3 +59,6 @@ keystore.properties
 # Local release outputs and store-listing assets (too large for git)
 release/
 store/
+
+# Firebase client config: supplied via CI secret GOOGLE_SERVICES_JSON, never committed
+google-services.json
